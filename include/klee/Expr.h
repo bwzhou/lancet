@@ -203,6 +203,12 @@ public:
     return r;
   }
   virtual int compareContents(const Expr &b) const { return 0; }
+  typedef std::vector<std::pair<uint64_t, uint64_t> > ExprConstantVec;
+  int compareSkipConstant(const Expr &b, ExprEquivSet &equivs,
+                          ExprConstantVec &constants) const;
+  int compareSkipConstant(const Expr &b) const;
+  virtual int compareContentsValue(const Expr &b) const
+  { return compareContents(b); }
 
   // Given an array of new kids return a copy of the expression
   // but using those children. 
@@ -649,6 +655,7 @@ public:
   void extend(const ref<Expr> &index, const ref<Expr> &value);
 
   int compare(const UpdateList &b) const;
+  int compareValue(const UpdateList &b) const;
   unsigned hash() const;
 };
 
@@ -678,6 +685,7 @@ public:
   ref<Expr> getKid(unsigned i) const { return !i ? index : 0; }  
   
   int compareContents(const Expr &b) const;
+  int compareContentsValue(const Expr &b) const;
 
   virtual ref<Expr> rebuild(ref<Expr> kids[]) const { 
     return create(updates, kids[0]);

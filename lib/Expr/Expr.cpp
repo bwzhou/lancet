@@ -98,14 +98,17 @@ int Expr::compare(const Expr &b, ExprEquivSet &equivs) const {
     return 0;
 
   Kind ak = getKind(), bk = b.getKind();
-  if (ak!=bk)
+  if (ak!=bk) {
     return (ak < bk) ? -1 : 1;
+  }
 
-  if (hashValue != b.hashValue) 
+  if (hashValue != b.hashValue) {
     return (hashValue < b.hashValue) ? -1 : 1;
+  }
 
-  if (int res = compareContents(b)) 
+  if (int res = compareContents(b)) {
     return res;
+  }
 
   unsigned aN = getNumKids();
   for (unsigned i=0; i<aN; i++)
@@ -114,6 +117,79 @@ int Expr::compare(const Expr &b, ExprEquivSet &equivs) const {
 
   equivs.insert(std::make_pair(ap, bp));
   return 0;
+}
+
+int Expr::compareSkipConstant(const Expr &b, ExprEquivSet &equivs,
+                              ExprConstantVec &constants) const {
+  //std::cerr << __FILE__ << ":" << __LINE__ << std::endl;
+  //this->dump();
+  //b.dump();
+  if (this == &b) return 0;
+
+  // Skip Constant
+  if (const ConstantExpr *ea = dyn_cast<ConstantExpr>(this)) {
+    if (const ConstantExpr *eb = dyn_cast<ConstantExpr>(&b)) {
+      // Treat boolean as part of constraint template
+      if (ea->getWidth() != Expr::Bool && eb->getWidth() != Expr::Bool) {
+        //this->dump();
+        //b.dump();
+        constants.push_back(std::make_pair(ea->getZExtValue(),
+                                           eb->getZExtValue()));
+        return 0;
+      }
+    }
+  }
+
+  const Expr *ap, *bp;
+  if (this < &b) {
+    ap = this; bp = &b;
+  } else {
+    ap = &b; bp = this;
+  }
+
+  if (equivs.count(std::make_pair(ap, bp)))
+    return 0;
+
+  Kind ak = getKind(), bk = b.getKind();
+  if (ak!=bk) {
+  //std::cerr << __FILE__ << ":" << __LINE__ << std::endl;
+    return (ak < bk) ? -1 : 1;
+  }
+
+  if (int res = compareContentsValue(b)) {
+  //std::cerr << __FILE__ << ":" << __LINE__ << std::endl;
+    return res;
+  }
+
+  if (const ExtractExpr *ea = dyn_cast<ExtractExpr>(this)) {
+    //std::cerr << ea->offset << std::endl;
+    //// Spare dyn_cast<ExtractExpr>(&b) since a.offset == b.offset
+    //std::cerr << ea->offset << std::endl;
+    constants.push_back(std::make_pair(ea->offset, ea->offset));
+  }
+
+  unsigned aN = getNumKids();
+  for (unsigned i=0; i<aN; i++)
+    if (int res = getKid(i)->compareSkipConstant(
+          *b.getKid(i), equivs, constants))
+      return res;
+
+  equivs.insert(std::make_pair(ap, bp));
+  return 0;
+}
+
+int Expr::compareSkipConstant(const Expr &b) const {
+  ExprEquivSet equivs;
+  ExprConstantVec constants;
+  int diff = compareSkipConstant(b, equivs, constants);
+  if (!diff) {
+    for (ExprConstantVec::const_iterator it = constants.begin(),
+         ie = constants.end(); it != ie; ++it) {
+      std::cerr << it->first << std::endl;
+      std::cerr << it->second << std::endl;
+    }
+  }
+  return diff;
 }
 
 void Expr::printKind(std::ostream &os, Kind k) {
@@ -522,6 +598,10 @@ ref<Expr> ReadExpr::create(const UpdateList &ul, ref<Expr> index) {
 
 int ReadExpr::compareContents(const Expr &b) const { 
   return updates.compare(static_cast<const ReadExpr&>(b).updates);
+}
+
+int ReadExpr::compareContentsValue(const Expr &b) const { 
+  return updates.compareValue(static_cast<const ReadExpr&>(b).updates);
 }
 
 ref<Expr> SelectExpr::create(ref<Expr> c, ref<Expr> t, ref<Expr> f) {

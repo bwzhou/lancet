@@ -68,11 +68,16 @@ namespace {
   InputFile(llvm::cl::desc("<input query log>"), llvm::cl::Positional,
             llvm::cl::init("-"));
 
+  llvm::cl::opt<std::string>
+  SecondFile(llvm::cl::desc("<second query log>"), llvm::cl::Positional,
+             llvm::cl::init("-"));
+
   enum ToolActions {
     PrintTokens,
     PrintAST,
     PrintSMTLIBv2,
-    Evaluate
+    Evaluate,
+    Compare
   };
 
   static llvm::cl::opt<ToolActions> 
@@ -81,12 +86,14 @@ namespace {
              llvm::cl::values(
              clEnumValN(PrintTokens, "print-tokens",
                         "Print tokens from the input file."),
-			clEnumValN(PrintSMTLIBv2, "print-smtlib",
-					   "Print parsed input file as SMT-LIBv2 query."),
+             clEnumValN(PrintSMTLIBv2, "print-smtlib",
+                        "Print parsed input file as SMT-LIBv2 query."),
              clEnumValN(PrintAST, "print-ast",
                         "Print parsed AST nodes from the input file."),
              clEnumValN(Evaluate, "evaluate",
                         "Print parsed AST nodes from the input file."),
+             clEnumValN(Compare, "compare",
+                        "Compare two input query files."),
              clEnumValEnd));
 
 
@@ -111,10 +118,11 @@ namespace {
 
   cl::opt<bool>
   UseDummySolver("use-dummy-solver",
-		   cl::init(false));
+                 cl::init(false));
 
-  llvm::cl::opt<std::string> directoryToWriteQueryLogs("query-log-dir",llvm::cl::desc("The folder to write query logs to. Defaults is current working directory."),
-		                                               llvm::cl::init("."));
+  llvm::cl::opt<std::string> directoryToWriteQueryLogs("query-log-dir",
+      llvm::cl::desc("The folder to write query logs to. Defaults is current working directory."),
+      llvm::cl::init("."));
 
 }
 
@@ -374,6 +382,87 @@ static bool EvaluateInputAST(const char *Filename,
   return success;
 }
 
+static bool ParseDecls(std::vector<Decl*> *Decls,
+                       const char *Filename,
+                       const MemoryBuffer *MB,
+                       ExprBuilder *Builder) {
+  Parser *P = Parser::Create(Filename, MB, Builder);
+  P->SetMaxErrors(20);
+  while (Decl *D = P->ParseTopLevelDecl()) {
+    Decls->push_back(D);
+  }
+
+  bool success = true;
+  if (unsigned N = P->GetNumErrors()) {
+    std::cerr << Filename << ": parse failure: "
+              << N << " errors.\n";
+    success = false;
+  }  
+
+  delete P;
+
+  return success;
+}
+
+static bool CompareInputAST(const char *Filename1,
+                            const char *Filename2,
+                            const MemoryBuffer *MB1,
+                            const MemoryBuffer *MB2,
+                            ExprBuilder *Builder) {
+  bool success = true;
+  std::vector<Decl*> Decls1, Decls2;
+
+  if (!Filename1 || !Filename2)
+    return false;
+
+  ParseDecls(&Decls1, Filename1, MB1, Builder);
+  ParseDecls(&Decls2, Filename2, MB2, Builder);
+
+  QueryCommand *QC1 = NULL;
+  for (std::vector<Decl*>::iterator it = Decls1.begin(), ie = Decls1.end();
+       it != ie; ++it) {
+    if (QC1 = dyn_cast<QueryCommand>(*it)) {
+      break;
+    }
+  }
+  QueryCommand *QC2 = NULL;
+  for (std::vector<Decl*>::iterator it = Decls2.begin(), ie = Decls2.end();
+       it != ie; ++it) {
+    if (QC2 = dyn_cast<QueryCommand>(*it)) {
+      break;
+    }
+  }
+
+  if (QC1 && QC2) {
+    std::vector<ExprHandle>::const_iterator
+      it1 = QC1->Constraints.begin(), ie1 = QC1->Constraints.end();
+    std::vector<ExprHandle>::const_iterator
+      it2 = QC2->Constraints.begin(), ie2 = QC2->Constraints.end();
+    for (; it1 != ie1; ++it1) {
+      std::vector<ExprHandle>::const_iterator dup2 = it2;
+      for (; dup2 != ie2 && (*it1).compareSkipConstant(*dup2); ++dup2);
+      if (dup2 == ie2) {
+        continue;
+      }
+      it2 = dup2;
+      std::cerr << "==============" << std::endl;
+      (*it1)->dump();
+      (*it2)->dump();
+      std::cerr << std::endl;
+      ++it2;
+    }
+  }
+
+  for (std::vector<Decl*>::iterator it = Decls1.begin(),
+       ie = Decls1.end(); it != ie; ++it)
+    delete *it;
+  for (std::vector<Decl*>::iterator it = Decls2.begin(),
+       ie = Decls2.end(); it != ie; ++it)
+    delete *it;
+
+  return success;
+}
+
 static bool printInputAsSMTLIBv2(const char *Filename,
                              const MemoryBuffer *MB,
                              ExprBuilder *Builder)
@@ -455,12 +544,31 @@ int main(int argc, char **argv) {
 
   std::string ErrorStr;
   
+#if LLVM_VERSION_CODE < LLVM_VERSION(2, 9)
+  MemoryBuffer *MB = MemoryBuffer::getFileOrSTDIN(InputFile.c_str(), &ErrorStr);
+  if (!MB) {
+    std::cerr << argv[0] << ": error: " << ErrorStr << "\n";
+    return 1;
+  }
+  MemoryBuffer *MB2 = MemoryBuffer::getFileOrSTDIN(SecondFile.c_str(), &ErrorStr);
+  if (!MB2) {
+    std::cerr << argv[0] << ": error: " << ErrorStr << "\n";
+    return 1;
+  }
+#else
   OwningPtr<MemoryBuffer> MB;
   error_code ec=MemoryBuffer::getFileOrSTDIN(InputFile.c_str(), MB);
   if (ec) {
     std::cerr << argv[0] << ": error: " << ec.message() << "\n";
     return 1;
   }
+  OwningPtr<MemoryBuffer> MB2;
+  ec=MemoryBuffer::getFileOrSTDIN(SecondFile.c_str(), MB2);
+  if (ec) {
+    std::cerr << argv[0] << ": error: " << ec.message() << "\n";
+    return 1;
+  }
+#endif
   
   ExprBuilder *Builder = 0;
   switch (BuilderKind) {
@@ -489,6 +597,17 @@ int main(int argc, char **argv) {
   case Evaluate:
     success = EvaluateInputAST(InputFile=="-" ? "<stdin>" : InputFile.c_str(),
                                MB.get(), Builder);
+    break;
+  case Compare:
+#if LLVM_VERSION_CODE < LLVM_VERSION(2, 9)
+    success = CompareInputAST(InputFile=="-" ? NULL : InputFile.c_str(),
+                              SecondFile=="-" ? NULL : SecondFile.c_str(),
+                              MB, MB2, Builder);
+#else
+    success = CompareInputAST(InputFile=="-" ? NULL : InputFile.c_str(),
+                              SecondFile=="-" ? NULL : SecondFile.c_str(),
+                              MB.get(), MB2.get(), Builder);
+#endif
     break;
   case PrintSMTLIBv2:
     success = printInputAsSMTLIBv2(InputFile=="-"? "<stdin>" : InputFile.c_str(), MB.get(),Builder);

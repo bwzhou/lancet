@@ -1,0 +1,2 @@
+#!/bin/bash
+Release+Asserts/bin/kleaver -pc-multibyte-reads=0 -compare $1 $2
