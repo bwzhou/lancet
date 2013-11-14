@@ -22,3 +22,6 @@ with open(sys.argv[1]) as f:
       else:
         output.append(tok)
 print ''.join(output)
+
+# make sure we have used all constants
+assert not constants
