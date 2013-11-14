@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 
 #include "expr/Lexer.h"
 #include "expr/Parser.h"
@@ -71,6 +72,10 @@ namespace {
   llvm::cl::opt<std::string>
   SecondFile(llvm::cl::desc("<second query log>"), llvm::cl::Positional,
              llvm::cl::init("-"));
+
+  llvm::cl::opt<std::string>
+  FeatureFile(llvm::cl::desc("<feature output>"), llvm::cl::Positional,
+              llvm::cl::init("-"));
 
   enum ToolActions {
     PrintTokens,
@@ -415,16 +420,13 @@ static bool SimplifyConstraints(const std::vector<ExprHandle> &constraints,
     std::vector<ExprHandle> assumption;
     assumption.push_back(*it);
     ConstraintManager assume(assumption);
+    // subsequent constraints is stronger by definition
     for (std::vector<ExprHandle>::const_iterator jt = constraints.begin();
          jt != it; ++jt) {
       //std::cerr << "jt:" << std::endl;
       //(*jt)->dump();
-
-      // subsequent constraints is stronger by definition
       bool res = false;
-      if (!S->mustBeTrue(Query(assume, *jt), res))
-        return false;
-      if (res)
+      if (S->mustBeTrue(Query(assume, *jt), res) && res)
         subsumed.insert(*jt);
     }
   }
@@ -443,8 +445,9 @@ static bool CompareInputAST(const char *Filename1,
                             const char *Filename2,
                             const MemoryBuffer *MB1,
                             const MemoryBuffer *MB2,
-                            ExprBuilder *Builder) {
-  if (!Filename1 || !Filename2)
+                            ExprBuilder *Builder,
+                            std::ostream *Feature) {
+  if (!Filename1 || !Filename2 || !Feature)
     return false;
 
   // Set up the solver
@@ -494,10 +497,24 @@ static bool CompareInputAST(const char *Filename1,
         it2 = constraints2.begin(), ie2 = constraints2.end();
       for (; it1 != ie1; ++it1) {
         std::vector<ExprHandle>::const_iterator dup2 = it2;
-        for (; dup2 != ie2 && (*it1).compareSkipConstant(*dup2); ++dup2);
+
+        Expr::ExprEquivSet equivs;
+        Expr::ExprConstantVec constants;
+        for (; dup2 != ie2 && (*it1)->compareSkipConstant(*(*dup2).get(), equivs, constants); ++dup2) {
+          equivs.clear();
+          constants.clear();
+        }
         if (dup2 == ie2) {
           continue;
         }
+
+        for (Expr::ExprConstantVec::const_iterator it = constants.begin(),
+             ie = constants.end(); it != ie; ++it) {
+          //std::cerr << it->first << " ";
+          *Feature << it->second << " ";
+        }
+        *Feature << std::endl;
+
         it2 = dup2;
         (*it1)->dump();
         //(*it2)->dump();
@@ -506,8 +523,6 @@ static bool CompareInputAST(const char *Filename1,
     }
   }
   std::cout << "]" << std::endl << "false)" << std::endl;
-  //std::vector<ExprHandle> constraints1;
-  //SimplifyConstraints(QC1->Constraints, &constraints1, S);
 
   // Release resources
   for (std::vector<Decl*>::iterator it = Decls1.begin(),
@@ -618,6 +633,7 @@ int main(int argc, char **argv) {
   }
   OwningPtr<MemoryBuffer> MB2;
 #endif
+  std::ostream *Feature;
   
   ExprBuilder *Builder = 0;
   switch (BuilderKind) {
@@ -648,6 +664,8 @@ int main(int argc, char **argv) {
                                MB.get(), Builder);
     break;
   case Compare:
+    Feature = new std::ofstream(
+        FeatureFile.c_str(), std::ios::out | std::ios::binary | std::ios::app);
 #if LLVM_VERSION_CODE < LLVM_VERSION(2, 9)
     MB2 = MemoryBuffer::getFileOrSTDIN(SecondFile.c_str(), &ErrorStr);
     if (!MB2) {
@@ -656,7 +674,7 @@ int main(int argc, char **argv) {
     }
     success = CompareInputAST(InputFile=="-" ? NULL : InputFile.c_str(),
                               SecondFile=="-" ? NULL : SecondFile.c_str(),
-                              MB, MB2, Builder);
+                              MB, MB2, Builder, Feature);
 #else
     ec = MemoryBuffer::getFileOrSTDIN(SecondFile.c_str(), MB2);
     if (ec) {
@@ -665,8 +683,9 @@ int main(int argc, char **argv) {
     }
     success = CompareInputAST(InputFile=="-" ? NULL : InputFile.c_str(),
                               SecondFile=="-" ? NULL : SecondFile.c_str(),
-                              MB.get(), MB2.get(), Builder);
+                              MB.get(), MB2.get(), Builder, Feature);
 #endif
+    delete Feature;
     break;
   case PrintSMTLIBv2:
     success = printInputAsSMTLIBv2(InputFile=="-"? "<stdin>" : InputFile.c_str(), MB.get(),Builder);

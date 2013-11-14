@@ -1,2 +1,2 @@
 #!/bin/bash
-Release+Asserts/bin/kleaver -pc-multibyte-reads=0 -compare $1 $2
+/home/ubuntu/bwzhou/klee/klee.upstream/Release+Asserts/bin/kleaver -ignore-solver-failures -pc-multibyte-reads=0 -compare $1 $2 $3 > $4
