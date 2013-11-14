@@ -513,13 +513,13 @@ static bool CompareInputAST(const char *Filename1,
           //std::cerr << it->first << " ";
           *Feature << it->second << " ";
         }
-        *Feature << std::endl;
 
         it2 = dup2;
         (*it1)->dump();
         //(*it2)->dump();
         ++it2;
       }
+      *Feature << std::endl;
     }
   }
   std::cout << "]" << std::endl << "false)" << std::endl;
