@@ -511,11 +511,11 @@ static bool CompareInputAST(const char *Filename1,
         for (Expr::ExprConstantVec::const_iterator it = constants.begin(),
              ie = constants.end(); it != ie; ++it) {
           //std::cerr << it->first << " ";
-          *Feature << it->second << " ";
+          *Feature << it->second << " "; /* Important to use second */
         }
 
         it2 = dup2;
-        (*it1)->dump();
+        (*it1)->dump(); /* Important: always end up with the same template */
         //(*it2)->dump();
         ++it2;
       }

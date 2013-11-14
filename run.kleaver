@@ -1,13 +1,20 @@
 #!/bin/bash
 DIR=$1
-BASE=$DIR/test000001.pc
 KLEAVER="/home/ubuntu/bwzhou/klee/klee.upstream/Release+Asserts/bin/kleaver"
 FLAGS="-ignore-solver-failures -pc-multibyte-reads=0 -compare"
 LOG=$DIR/kleaver.time
 TIME="/usr/bin/time -a -o $LOG"
+
+base=$DIR/test000001.pc
+for i in $(ls -tv $DIR/test*pc)
+do
+  $TIME $KLEAVER $FLAGS $base $i /dev/null > $DIR/min.template
+  base=$DIR/min.template
+done
+
 for i in $(ls -tv $DIR/test*pc)
 do
   echo input:$i
   echo output:${i%pc}feature, ${i%pc}template
-  $TIME $KLEAVER $FLAGS $BASE $i ${i%pc}feature > ${i%pc}template
+  $TIME $KLEAVER $FLAGS $base $i ${i%pc}feature > ${i%pc}template
 done
