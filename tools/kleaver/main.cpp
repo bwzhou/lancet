@@ -404,26 +404,75 @@ static bool ParseDecls(std::vector<Decl*> *Decls,
   return success;
 }
 
+static bool SimplifyConstraints(const std::vector<ExprHandle> &constraints,
+                                std::vector<ExprHandle> *simplified,
+                                Solver *S) {
+  std::set<ExprHandle> subsumed;
+  for (std::vector<ExprHandle>::const_iterator it = constraints.begin(),
+       ie = constraints.end(); it != ie; ++it) {
+    //std::cerr << "it:" << std::endl;
+    //(*it)->dump();
+    std::vector<ExprHandle> assumption;
+    assumption.push_back(*it);
+    ConstraintManager assume(assumption);
+    for (std::vector<ExprHandle>::const_iterator jt = constraints.begin();
+         jt != it; ++jt) {
+      //std::cerr << "jt:" << std::endl;
+      //(*jt)->dump();
+
+      // subsequent constraints is stronger by definition
+      bool res = false;
+      if (!S->mustBeTrue(Query(assume, *jt), res))
+        return false;
+      if (res)
+        subsumed.insert(*jt);
+    }
+  }
+
+  for (std::vector<ExprHandle>::const_iterator it = constraints.begin(),
+       ie = constraints.end(); it != ie; ++it) {
+    if (subsumed.find(*it) != subsumed.end())
+      continue;
+    simplified->push_back(*it);
+  }
+
+  return true;
+}
+
 static bool CompareInputAST(const char *Filename1,
                             const char *Filename2,
                             const MemoryBuffer *MB1,
                             const MemoryBuffer *MB2,
                             ExprBuilder *Builder) {
-  bool success = true;
-  std::vector<Decl*> Decls1, Decls2;
-
   if (!Filename1 || !Filename2)
     return false;
 
+  // Set up the solver
+  Solver *coreSolver = NULL;
+  coreSolver = UseDummySolver ? createDummySolver() : new STPSolver(UseForkedCoreSolver);
+  if (!UseDummySolver) {
+    if (0 != MaxCoreSolverTime) {
+      coreSolver->setCoreSolverTimeout(MaxCoreSolverTime);
+    }
+  }
+  Solver *S = constructSolverChain(coreSolver,
+                                   getQueryLogPath(ALL_QUERIES_SMT2_FILE_NAME),
+                                   getQueryLogPath(SOLVER_QUERIES_SMT2_FILE_NAME),
+                                   getQueryLogPath(ALL_QUERIES_PC_FILE_NAME),
+                                   getQueryLogPath(SOLVER_QUERIES_PC_FILE_NAME));
+
+  // Parse the input
+  bool success = true;
+  std::vector<Decl*> Decls1, Decls2;
   ParseDecls(&Decls1, Filename1, MB1, Builder);
   ParseDecls(&Decls2, Filename2, MB2, Builder);
-
   QueryCommand *QC1 = NULL;
   for (std::vector<Decl*>::iterator it = Decls1.begin(), ie = Decls1.end();
        it != ie; ++it) {
     if (QC1 = dyn_cast<QueryCommand>(*it)) {
       break;
     }
+    (*it)->dump();
   }
   QueryCommand *QC2 = NULL;
   for (std::vector<Decl*>::iterator it = Decls2.begin(), ie = Decls2.end();
@@ -433,32 +482,41 @@ static bool CompareInputAST(const char *Filename1,
     }
   }
 
+  std::cout << "(query [";
+  // Simplify and match the two sets of constraints
   if (QC1 && QC2) {
-    std::vector<ExprHandle>::const_iterator
-      it1 = QC1->Constraints.begin(), ie1 = QC1->Constraints.end();
-    std::vector<ExprHandle>::const_iterator
-      it2 = QC2->Constraints.begin(), ie2 = QC2->Constraints.end();
-    for (; it1 != ie1; ++it1) {
-      std::vector<ExprHandle>::const_iterator dup2 = it2;
-      for (; dup2 != ie2 && (*it1).compareSkipConstant(*dup2); ++dup2);
-      if (dup2 == ie2) {
-        continue;
+    std::vector<ExprHandle> constraints1, constraints2;
+    if (SimplifyConstraints(QC1->Constraints, &constraints1, S) &&
+        SimplifyConstraints(QC2->Constraints, &constraints2, S)) {
+      std::vector<ExprHandle>::const_iterator
+        it1 = constraints1.begin(), ie1 = constraints1.end();
+      std::vector<ExprHandle>::const_iterator
+        it2 = constraints2.begin(), ie2 = constraints2.end();
+      for (; it1 != ie1; ++it1) {
+        std::vector<ExprHandle>::const_iterator dup2 = it2;
+        for (; dup2 != ie2 && (*it1).compareSkipConstant(*dup2); ++dup2);
+        if (dup2 == ie2) {
+          continue;
+        }
+        it2 = dup2;
+        (*it1)->dump();
+        //(*it2)->dump();
+        ++it2;
       }
-      it2 = dup2;
-      std::cerr << "==============" << std::endl;
-      (*it1)->dump();
-      (*it2)->dump();
-      std::cerr << std::endl;
-      ++it2;
     }
   }
+  std::cout << "]" << std::endl << "false)" << std::endl;
+  //std::vector<ExprHandle> constraints1;
+  //SimplifyConstraints(QC1->Constraints, &constraints1, S);
 
+  // Release resources
   for (std::vector<Decl*>::iterator it = Decls1.begin(),
        ie = Decls1.end(); it != ie; ++it)
     delete *it;
   for (std::vector<Decl*>::iterator it = Decls2.begin(),
        ie = Decls2.end(); it != ie; ++it)
     delete *it;
+  delete S;
 
   return success;
 }
@@ -550,24 +608,15 @@ int main(int argc, char **argv) {
     std::cerr << argv[0] << ": error: " << ErrorStr << "\n";
     return 1;
   }
-  MemoryBuffer *MB2 = MemoryBuffer::getFileOrSTDIN(SecondFile.c_str(), &ErrorStr);
-  if (!MB2) {
-    std::cerr << argv[0] << ": error: " << ErrorStr << "\n";
-    return 1;
-  }
+  MemoryBuffer *MB2;
 #else
   OwningPtr<MemoryBuffer> MB;
-  error_code ec=MemoryBuffer::getFileOrSTDIN(InputFile.c_str(), MB);
+  error_code ec = MemoryBuffer::getFileOrSTDIN(InputFile.c_str(), MB);
   if (ec) {
     std::cerr << argv[0] << ": error: " << ec.message() << "\n";
     return 1;
   }
   OwningPtr<MemoryBuffer> MB2;
-  ec=MemoryBuffer::getFileOrSTDIN(SecondFile.c_str(), MB2);
-  if (ec) {
-    std::cerr << argv[0] << ": error: " << ec.message() << "\n";
-    return 1;
-  }
 #endif
   
   ExprBuilder *Builder = 0;
@@ -600,10 +649,20 @@ int main(int argc, char **argv) {
     break;
   case Compare:
 #if LLVM_VERSION_CODE < LLVM_VERSION(2, 9)
+    MB2 = MemoryBuffer::getFileOrSTDIN(SecondFile.c_str(), &ErrorStr);
+    if (!MB2) {
+      std::cerr << argv[0] << ": error: " << ErrorStr << "\n";
+      return 1;
+    }
     success = CompareInputAST(InputFile=="-" ? NULL : InputFile.c_str(),
                               SecondFile=="-" ? NULL : SecondFile.c_str(),
                               MB, MB2, Builder);
 #else
+    ec = MemoryBuffer::getFileOrSTDIN(SecondFile.c_str(), MB2);
+    if (ec) {
+      std::cerr << argv[0] << ": error: " << ec.message() << "\n";
+      return 1;
+    }
     success = CompareInputAST(InputFile=="-" ? NULL : InputFile.c_str(),
                               SecondFile=="-" ? NULL : SecondFile.c_str(),
                               MB.get(), MB2.get(), Builder);

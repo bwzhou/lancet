@@ -185,7 +185,7 @@ int Expr::compareSkipConstant(const Expr &b) const {
   if (!diff) {
     for (ExprConstantVec::const_iterator it = constants.begin(),
          ie = constants.end(); it != ie; ++it) {
-      std::cerr << it->first << std::endl;
+      //std::cerr << it->first << std::endl;
       std::cerr << it->second << std::endl;
     }
   }
@@ -387,8 +387,8 @@ void Expr::print(std::ostream &os) const {
 }
 
 void Expr::dump() const {
-  this->print(std::cerr);
-  std::cerr << std::endl;
+  this->print(std::cout);
+  std::cout << std::endl;
 }
 
 /***/
