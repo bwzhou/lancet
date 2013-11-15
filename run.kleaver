@@ -8,12 +8,13 @@ BASE=$DIR/min.template
 TMP=$DIR/min.tmp
 
 cp $DIR/test000001.pc $BASE
-for i in $(ls -tv $DIR/test*pc)
-do
-  $TIME $KLEAVER $FLAGS $BASE $i /dev/null > $TMP
-  cp $TMP $BASE
-  wc -l $BASE >> $DIR/min.log
-done
+
+#for i in $(ls -tv $DIR/test*pc)
+#do
+#  $TIME $KLEAVER $FLAGS $BASE $i /dev/null > $TMP
+#  cp $TMP $BASE
+#  wc -l $BASE >> $DIR/min.log
+#done
 
 for i in $(ls -tv $DIR/test*pc)
 do
