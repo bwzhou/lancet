@@ -485,10 +485,14 @@ static bool CompareInputAST(const char *Filename1,
     }
   }
 
-  std::cout << "(query [";
+  //std::cout << "(query [";
   // Simplify and match the two sets of constraints
   if (QC1 && QC2) {
-    std::vector<ExprHandle> constraints1, constraints2;
+    std::vector<ExprHandle> constraints1, constraints2, matched;
+    std::vector<ExprHandle> values;
+    std::vector<const Array*> objects;
+    ExprHandle result = Builder->Constant(0, Expr::Bool);
+
     if (SimplifyConstraints(QC1->Constraints, &constraints1, S) &&
         SimplifyConstraints(QC2->Constraints, &constraints2, S)) {
       std::vector<ExprHandle>::const_iterator
@@ -515,14 +519,17 @@ static bool CompareInputAST(const char *Filename1,
         }
 
         it2 = dup2;
-        (*it1)->dump(); /* Important: always end up with the same template */
+        //(*it1)->dump(); /* Important: always end up with the same template */
+        matched.push_back(*it1);
         //(*it2)->dump();
         ++it2;
       }
       *Feature << std::endl;
     }
+    QueryCommand QC(matched, result, values, objects);
+    QC.dump();
   }
-  std::cout << "]" << std::endl << "false)" << std::endl;
+  //std::cout << "]" << std::endl << "false)" << std::endl;
 
   // Release resources
   for (std::vector<Decl*>::iterator it = Decls1.begin(),
