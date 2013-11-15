@@ -358,14 +358,14 @@ public:
     if (ConstantExpr *CE = dyn_cast<ConstantExpr>(e))
       printConst(CE, PC, printConstWidth);
     else {
-      std::map<ref<Expr>, unsigned>::iterator it = bindings.find(e);
-      if (it!=bindings.end()) {
-        PC << 'N' << it->second;
-      } else {
-        if (!hasScan || shouldPrint.count(e)) {
-          PC << 'N' << counter << ':';
-          bindings.insert(std::make_pair(e, counter++));
-        }
+      // std::map<ref<Expr>, unsigned>::iterator it = bindings.find(e);
+      // if (it!=bindings.end()) {
+      //   PC << 'N' << it->second;
+      // } else {
+      //   if (!hasScan || shouldPrint.count(e)) {
+      //     PC << 'N' << counter << ':';
+      //     bindings.insert(std::make_pair(e, counter++));
+      //   }
 
         // Detect multibyte reads.
         // FIXME: Hrm. One problem with doing this is that we are
@@ -406,7 +406,7 @@ public:
           printExpr(e.get(), PC, indent);	
         }
         PC << ")";
-      }
+      // } /* not use bindings in output */
     }
   }
 
