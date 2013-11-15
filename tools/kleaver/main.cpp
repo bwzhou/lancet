@@ -425,7 +425,7 @@ static bool SimplifyConstraints(const std::vector<ExprHandle> &constraints,
          jt != it; ++jt) {
       //std::cerr << "jt:" << std::endl;
       //(*jt)->dump();
-      if (subsumed.find(*jt) != subsumed.end()) {
+      if (subsumed.find(*jt) == subsumed.end()) {
         bool res = false;
         if (S->mustBeTrue(Query(assume, *jt), res) && res)
           subsumed.insert(*jt);
