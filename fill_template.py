@@ -20,9 +20,11 @@ with open(sys.argv[1]) as f:
         if re.match('^\d+$', tok):
           output.append(constants.popleft())
         elif re.match('^\(+\d+$', tok):
-          output.append('(' + constants.popleft())
+          count = tok.count('(')
+          output.append('(' * count + constants.popleft())
         elif re.match('^\d+\)+$', tok):
-          output.append(constants.popleft() + ')')
+          count = tok.count(')')
+          output.append(constants.popleft() + ')' * count)
         else:
           output.append(tok)
       else:
