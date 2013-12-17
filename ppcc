@@ -1,0 +1,10 @@
+#!/bin/bash
+set -x
+BC=$1
+O=${2:-${BC%.bc}.papi}
+S=${BC%.bc}.s
+LIBS="/home/ubuntu/bwzhou/klee/klee.git/runtime/papi/Release+Asserts/papi.o /home/ubuntu/bwzhou/klee/papi-5.0.0/src/libpapi.a -lm"
+LLC=/home/ubuntu/bwzhou/klee/cloud9/src/third_party/llvm-build/Release+Asserts/bin/llc
+CC=gcc
+$LLC $BC
+$CC $S $LIBS -o $O
