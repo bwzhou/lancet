@@ -260,6 +260,12 @@ namespace {
             cl::init(true));
 }
 
+cl::opt<bool>
+TargetedLoopOnly("targeted-loop-only",
+                 cl::desc("Explore only the targeted loops specified by user with loop attribute (default=off)"),
+                 cl::init(false));
+
+uint64_t executedInstructionCount = 0;
 
 namespace klee {
   RNG theRNG;
@@ -875,6 +881,19 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
     ++stats::forks;
 
     falseState = trueState->branch();
+
+    if (trueState->loopBB) {
+      std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
+                << " roller state " << trueState
+                << " branched a new state " << falseState
+                << std::endl;
+    } else {
+      std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
+                << " state " << trueState
+                << " branched a new state " << falseState
+                << std::endl;
+    }
+
     addedStates.insert(falseState);
 
     if (RandomizeFork && theRNG.getBool())
@@ -1342,6 +1361,50 @@ void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src,
   KFunction *kf = state.stack.back().kf;
   unsigned entry = kf->basicBlockEntry[dst];
   state.pc = &kf->instructions[entry];
+
+  LoopInfoBase<BasicBlock, Loop> *LIB;
+  LIB = kmodule->loopInfoBaseMap[kf->function];
+
+  llvm::Instruction *Start = state.pc->inst;
+  /*
+  llvm::errs() << __FILE__ << ":" << __LINE__
+            << " state " << &state
+            << " dst.isLoopHeader(" << dst->getName().str() << ") "
+            << LIB->isLoopHeader(dst)
+            << " src.getLoopDepth(" << src->getName().str() << ") "
+            << LIB->getLoopDepth(src)
+            << " dst.getLoopDepth(" << dst->getName().str() << ") "
+            << LIB->getLoopDepth(dst)
+            << " loopBB " << state.loopBB
+            << " getMetadata " << Start->getMetadata("loop")
+            << "\n";
+  */
+
+  if (state.prevPC->inst->getOpcode() == Instruction::Br) {
+    if (LIB->isLoopHeader(dst) &&
+        LIB->getLoopDepth(src) < LIB->getLoopDepth(dst)) {
+      if (state.loopBB == 0) { // explorer finds a new loop
+        if (!TargetedLoopOnly || NULL != Start->getMetadata("loop")) {
+          // Transform an explorer into a roller
+          state.loopBB = LIB->getLoopFor(dst);
+
+          std::string output;
+          getConstraintLog(state, output, KQUERY);
+          std::cerr << __FILE__ << ":" << __LINE__
+                    << " state " << &state
+                    << " becomes a roller state"
+                    << " after " << executedInstructionCount << " instructions."
+                    << std::endl
+                    << " constraints:"
+                    << std::endl
+                    << output
+                    << std::endl;
+
+        }
+      }
+    }
+  }
+
   if (state.pc->inst->getOpcode() == Instruction::PHI) {
     PHINode *first = static_cast<PHINode*>(state.pc->inst);
     state.incomingBBIndex = first->getBasicBlockIndex(src);
@@ -1417,6 +1480,11 @@ static inline const llvm::fltSemantics * fpWidthToSemantics(unsigned width) {
 }
 
 void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
+  if (executedInstructionCount++ % 1000000 == 0) {
+    llvm::errs() << __FILE__ << ":" << __LINE__
+              << " current time in second " << util::getWallTime()
+              << "\n";
+  }
   Instruction *i = ki->inst;
   switch (i->getOpcode()) {
     // Control flow
@@ -2689,6 +2757,10 @@ std::string Executor::getAddressInfo(ExecutionState &state,
 }
 
 void Executor::terminateState(ExecutionState &state) {
+  std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
+            << " st " << &state
+            << std::endl;
+
   if (replayOut && replayPosition!=replayOut->numObjects) {
     klee_warning_once(replayOut, 
                       "replay did not consume all objects in test input.");
@@ -2715,6 +2787,10 @@ void Executor::terminateState(ExecutionState &state) {
 
 void Executor::terminateStateEarly(ExecutionState &state, 
                                    const Twine &message) {
+  std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
+            << " st " << &state
+            << std::endl;
+
   if (!OnlyOutputStatesCoveringNew || state.coveredNew ||
       (AlwaysOutputSeeds && seedMap.count(&state)))
     interpreterHandler->processTestCase(state, (message + "\n").str().c_str(),
@@ -2723,6 +2799,10 @@ void Executor::terminateStateEarly(ExecutionState &state,
 }
 
 void Executor::terminateStateOnExit(ExecutionState &state) {
+  std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
+            << " st " << &state
+            << std::endl;
+
   if (!OnlyOutputStatesCoveringNew || state.coveredNew || 
       (AlwaysOutputSeeds && seedMap.count(&state)))
     interpreterHandler->processTestCase(state, 0, 0);
@@ -2775,6 +2855,10 @@ void Executor::terminateStateOnError(ExecutionState &state,
                                      const llvm::Twine &messaget,
                                      const char *suffix,
                                      const llvm::Twine &info) {
+  std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
+            << " st " << &state
+            << std::endl;
+
   std::string message = messaget.str();
   static std::set< std::pair<Instruction*, std::string> > emittedErrors;
   Instruction * lastInst;

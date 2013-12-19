@@ -12,6 +12,8 @@
 
 #include "klee/Config/Version.h"
 #include "klee/Interpreter.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/Dominators.h"
 
 #include <map>
 #include <set>
@@ -97,6 +99,11 @@ namespace klee {
     // Our shadow versions of LLVM structures.
     std::vector<KFunction*> functions;
     std::map<llvm::Function*, KFunction*> functionMap;
+
+    std::vector<llvm::DominatorTreeBase<llvm::BasicBlock>*> dominatorTreeBases;
+    std::map<llvm::Function*, llvm::DominatorTreeBase<llvm::BasicBlock>*> dominatorTreeBaseMap;
+    std::vector<llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>*> loopInfoBases;
+    std::map<llvm::Function*, llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>*> loopInfoBaseMap;
 
     // Functions which escape (may be called indirectly)
     // XXX change to KFunction

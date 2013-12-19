@@ -301,6 +301,49 @@ namespace klee {
     }
   };
 
+  class LoopSearcher : public Searcher {
+    Executor &executor;
+    Searcher *baseSearcher;
+    std::vector<ExecutionState*> rollerStateStack;
+
+  public:
+    LoopSearcher(Executor &executor, Searcher *baseSearcher);
+    ~LoopSearcher();
+
+    ExecutionState &selectState();
+    void update(ExecutionState *current,
+                const std::set<ExecutionState*> &addedStates,
+                const std::set<ExecutionState*> &removedStates);
+    bool empty() { return baseSearcher->empty() && rollerStateStack.empty(); }
+    void printName(std::ostream &os) {
+      os << "<LoopSearcher> baseSearcher:\n";
+      baseSearcher->printName(os);
+      os << "</LoopSearcher>\n";
+    }
+  };
+
+  class DelayedExternalCallSearcher : public Searcher {
+    Executor &executor;
+    Searcher *baseSearcher;
+    std::set<ExecutionState*> delayedStates;
+
+  public:
+    DelayedExternalCallSearcher(Executor &executor, Searcher *baseSearcher);
+    ~DelayedExternalCallSearcher();
+
+    ExecutionState &selectState();
+    void update(ExecutionState *current,
+                const std::set<ExecutionState*> &addedStates,
+                const std::set<ExecutionState*> &removedStates);
+    bool empty() { return baseSearcher->empty() && delayedStates.empty(); }
+    void printName(std::ostream &os) {
+      os << "<DelayedExternalCallSearcher> baseSearcher:\n";
+      baseSearcher->printName(os);
+      os << "</DelayedExternalCallSearcher>\n";
+    }
+  private:
+    bool isExternalCall(ExecutionState *current);
+  };
 }
 
 #endif

@@ -37,6 +37,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_os_ostream.h"
 
 // FIXME: Ugh, this is gross. But otherwise our config.h conflicts with LLVMs.
 #undef PACKAGE_BUGREPORT
@@ -52,6 +53,8 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/system_error.h"
 
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include <dirent.h>
 #include <signal.h>
 #include <unistd.h>
@@ -142,6 +145,12 @@ namespace {
   WithPOSIXRuntime("posix-runtime", 
 		cl::desc("Link with POSIX runtime.  Options that can be passed as arguments to the programs are: --sym-argv <max-len>  --sym-argvs <min-argvs> <max-argvs> <max-len> + file model options"),
 		cl::init(false));
+
+  cl::opt<bool>
+  WithPAPI("papi",
+           cl::desc("Write .bc file with targeted loop instrumented with PAPI "
+                    "for each test case"),
+           cl::init(false));
     
   cl::opt<bool>
   OptimizeModule("optimize", 
@@ -208,9 +217,16 @@ namespace {
   Watchdog("watchdog",
            cl::desc("Use a watchdog process to enforce --max-time."),
            cl::init(0));
+
+  cl::opt<bool>
+  OnlyRollerOutput("only-roller-output",
+                   cl::init(false));
 }
 
 extern cl::opt<double> MaxTime;
+extern cl::opt<bool> TargetedLoopOnly;
+extern cl::opt<unsigned> LoopMinCount;
+extern cl::opt<unsigned> LoopMaxCount;
 
 /***/
 
@@ -411,6 +427,26 @@ std::ostream *KleeHandler::openTestFile(const std::string &suffix, unsigned id) 
   return openOutputFile(getTestFilename(suffix, id));
 }
 
+BasicBlock *findBlockInModule(BasicBlock *b, Module *m) {
+  StringRef functionName = b->getParent()->getName();
+  if (functionName == "__user_main") {
+    std::cerr << __FILE__ << ":" << __LINE__
+              << " search for "
+              << b->getName().str()
+              << " in main instead of __user_main"
+              << std::endl;
+    functionName = "main";
+  }
+  BasicBlock* target = 0;
+  for (Module::iterator FI = m->begin(), FE = m->end(); FI != FE; ++FI)
+    if (FI->getName() == functionName)
+      for (Function::iterator BI = FI->begin(), BE = FI->end(); BI != BE; ++BI)
+        if (BI->getName() == b->getName())
+          target = BI;
+  return target;
+}
+
+Module *pristineModule;
 
 /* Outputs all files (.ktest, .pc, .cov etc.) describing a test case */
 void KleeHandler::processTestCase(const ExecutionState &state,
@@ -420,6 +456,12 @@ void KleeHandler::processTestCase(const ExecutionState &state,
     std::cerr << "EXITING ON ERROR:\n" << errorMessage << "\n";
     exit(1);
   }
+
+  if (OnlyRollerOutput &&
+      (!state.loopBB ||
+       state.loopTotalCount < LoopMinCount ||
+       state.loopTotalCount > LoopMaxCount))
+    return;
 
   if (!NoOutput) {
     std::vector< std::pair<std::string, std::vector<unsigned char> > > out;
@@ -457,6 +499,74 @@ void KleeHandler::processTestCase(const ExecutionState &state,
       for (unsigned i=0; i<b.numObjects; i++)
         delete[] b.objects[i].bytes;
       delete[] b.objects;
+      if (state.loopBB) {
+        if (WithPAPI && id == 1) {
+          // All tests of the targeted loop share the same instrumentation so
+          // only output the first instrumented .bc file if a target loop is
+          // given.
+          Function *papiStartFn = 
+            cast<Function>(pristineModule->getOrInsertFunction("__papi_wrapper_start",
+                                                  Type::getVoidTy(getGlobalContext()),
+                                                  NULL));
+          assert(papiStartFn);
+          Function *papiStopFn =
+            cast<Function>(pristineModule->getOrInsertFunction("__papi_wrapper_stop",
+                                                  Type::getVoidTy(getGlobalContext()),
+                                                  NULL));
+          assert(papiStopFn);
+
+          std::vector<Instruction*> insertedCalls;
+          Instruction *callInst;
+          BasicBlock *found;
+
+          found = findBlockInModule(state.loopBB->getHeader(), pristineModule);
+          assert(found);
+          if (found) {
+            callInst = CallInst::Create(papiStartFn, "", found->getFirstInsertionPt());
+            insertedCalls.push_back(callInst);
+
+            SmallVector<BasicBlock*, 4> ExitBlocks;
+            state.loopBB->getExitBlocks(ExitBlocks);
+            for (unsigned i = 0, e = ExitBlocks.size(); i != e; ++i) {
+              found = findBlockInModule(ExitBlocks[i], pristineModule);
+              assert(found);
+              callInst = CallInst::Create(papiStopFn, "", found->getFirstInsertionPt());
+              insertedCalls.push_back(callInst);
+            }
+
+            std::ostream *f = openTestFile("bc", id);
+            raw_os_ostream* rfs = new raw_os_ostream(*f);
+            WriteBitcodeToFile(pristineModule, *rfs);
+            delete rfs;
+            delete f;
+
+            // FIXME use removeFromParent to reuse Call
+            while(!insertedCalls.empty()) {
+              insertedCalls.back()->eraseFromParent();
+              insertedCalls.pop_back();
+            }
+          } else {
+            BasicBlock *b = state.loopBB->getHeader();
+            std::cerr << __FILE__ << ":" << __LINE__
+                      << " did not find the block "
+                      << b->getName().str()
+                      << " in function "
+                      << b->getParent()->getName().str()
+                      << std::endl;
+          }
+        }
+        llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__
+                     << " st " << &state
+                     << " loop " << state.loopBB
+                     << " total " << state.loopTotalCount
+                     << "\n";
+
+        std::stringstream loopSuffix;
+        loopSuffix << "looptotal." << (void *) &state << "." << state.loopTotalCount;
+        std::ostream *f = openTestFile(loopSuffix.str().c_str(), id);
+        *f << "Roller terminated\n";
+        delete f;
+      }
     }
 
     if (errorMessage) {
@@ -1253,6 +1363,9 @@ int main(int argc, char **argv, char **envp) {
     klee_error("error loading program '%s': %s", InputFile.c_str(),
                ErrorMsg.c_str());
 
+  pristineModule = CloneModule(mainModule);
+
+
   if (WithPOSIXRuntime) {
     int r = initEnv(mainModule);
     if (r != 0)
@@ -1295,6 +1408,15 @@ int main(int argc, char **argv, char **envp) {
     mainModule = klee::linkWithLibrary(mainModule, Path.c_str());
     assert(mainModule && "unable to link with simple model");
   }  
+
+  if (WithPAPI) {
+    llvm::sys::Path Path(Opts.LibraryDir);
+    Path.appendComponent("libkleeRuntimePAPI.bca");
+    klee_message("NOTE: Using PAPI: %s", Path.c_str());
+    mainModule = klee::linkWithLibrary(mainModule, Path.c_str());
+    assert(mainModule && "unable to link with PAPI");
+  }
+
 
   // Get the desired main function.  klee_main initializes uClibc
   // locale and other data and then calls main.

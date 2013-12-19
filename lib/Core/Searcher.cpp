@@ -28,10 +28,12 @@
 #if LLVM_VERSION_CODE >= LLVM_VERSION(3, 3)
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #else
 #include "llvm/Constants.h"
 #include "llvm/Instructions.h"
+#include "llvm/IntrinsicInst.h"
 #include "llvm/Module.h"
 #endif
 #include "llvm/Support/CallSite.h"
@@ -49,6 +51,14 @@ namespace {
   cl::opt<bool>
   DebugLogMerge("debug-log-merge");
 }
+
+cl::opt<unsigned>
+LoopMinCount("loop-min-count",
+             cl::init(1));
+
+cl::opt<unsigned>
+LoopMaxCount("loop-max-count",
+             cl::init(100));
 
 namespace klee {
   extern RNG theRNG;
@@ -611,4 +621,185 @@ void InterleavedSearcher::update(ExecutionState *current,
   for (std::vector<Searcher*>::const_iterator it = searchers.begin(),
          ie = searchers.end(); it != ie; ++it)
     (*it)->update(current, addedStates, removedStates);
+}
+
+/***/
+
+LoopSearcher::LoopSearcher(Executor& _executor, Searcher* _baseSearcher)
+  : executor(_executor),
+    baseSearcher(_baseSearcher) {
+}
+
+LoopSearcher::~LoopSearcher() {
+  delete baseSearcher;
+}
+
+ExecutionState &LoopSearcher::selectState() {
+  if (!rollerStateStack.empty()) {
+    ExecutionState *state = rollerStateStack.back();
+    rollerStateStack.pop_back();
+    return *state;
+  }
+  return baseSearcher->selectState();
+}
+
+static bool loopContains(const Loop *L,
+                         const BasicBlock *B,
+                         const LoopInfoBase<BasicBlock, Loop> *LIB) {
+  return L == LIB->getLoopFor(B);
+}
+
+/*
+static bool loopDominates(const Loop *L,
+                          const BasicBlock *B,
+                          const LoopInfoBase<BasicBlock, Loop> *LIB) {
+  Loop *loop = LIB->getLoopFor(B);
+  while (loop) {
+    if (L == loop)
+      return true;
+    loop = loop->getParentLoop();
+  }
+  return false;
+}
+*/
+
+// TODO need to incorporate loop nested in function calls
+void LoopSearcher::update(ExecutionState *current,
+                          const std::set<ExecutionState*> &addedStates,
+                          const std::set<ExecutionState*> &removedStates) {
+  if (current && executor.seedMap.find(current) == executor.seedMap.end()) {
+    // Handles branch instruction
+    if (current->prevPC->inst->getOpcode() == Instruction::Br) {
+      bool terminated = false;
+      if (current->loopBB) {
+        BasicBlock *src = current->prevPC->inst->getParent();
+        BasicBlock *dst = current->pc->inst->getParent();
+        LoopInfoBase<BasicBlock, Loop> *LIB =
+          executor.kmodule->loopInfoBaseMap[dst->getParent()];
+
+        // Make sure we start from OR stop at the same loop as loopBB
+        if (loopContains(current->loopBB, src, LIB) ||
+            loopContains(current->loopBB, dst, LIB)) {
+
+          if (current->loopBB->getHeader() == dst) {
+            // Case 1: roller jumps to loop header
+
+            llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__
+                         << " state " << current
+                         << " loop " << current->loopBB
+                         << " total " << current->loopTotalCount
+                         << " src " << src->getName()
+                         << " depth " << LIB->getLoopDepth(src)
+                         << " dst " << dst->getName()
+                         << " depth " << LIB->getLoopDepth(dst)
+                         << "\n";
+
+            if (loopContains(current->loopBB, src, LIB)) {
+              
+                ++current->loopTotalCount;
+                if (current->loopTotalCount > LoopMaxCount) {
+                  // By allowing the state to iterate one more round than the
+                  // target number of iterations, the forked state in the last
+                  // iteration would have reached the exact target number when
+                  // exiting the loop.
+                  terminated = true;
+                }
+                // Back edge must be an unconditional jump
+                assert(addedStates.empty());
+            } else {
+              // Handle the just transformed roller
+            }
+          }
+        }
+      }
+
+      // Pursue all rollers until they exit the current function
+      for (std::set<ExecutionState*>::iterator it = addedStates.begin(),
+           ie = addedStates.end(); it != ie; ++it) {
+        if ((*it)->loopBB) {
+          rollerStateStack.push_back(*it);
+        }
+      }
+      if (current->loopBB && !terminated && !removedStates.count(current)) {
+        rollerStateStack.push_back(current);
+      }
+      if (terminated) {
+        executor.terminateState(*current);
+      }
+
+    } else {
+      // Handles other instruction
+      if (current->loopBB && !removedStates.count(current)) {
+        // Put the current state back to the roller stack so it can be
+        // selected for the next instruction.
+        rollerStateStack.push_back(current);
+      }
+    }
+  }
+
+  baseSearcher->update(current, addedStates, removedStates);
+}
+
+DelayedExternalCallSearcher::DelayedExternalCallSearcher(
+    Executor& _executor, Searcher *_baseSearcher)
+  : executor(_executor), baseSearcher(_baseSearcher) {
+}
+
+DelayedExternalCallSearcher::~DelayedExternalCallSearcher() {
+  delete baseSearcher;
+}
+
+ExecutionState &DelayedExternalCallSearcher::selectState() {
+  return baseSearcher->selectState();
+}
+
+bool DelayedExternalCallSearcher::isExternalCall(ExecutionState *current) {
+  Instruction *i = current->pc->inst;
+  if (i->getOpcode() == Instruction::Call) {
+    CallSite cs(i);
+    Function *f = executor.getTargetFunction(cs.getCalledValue(), *current);
+    if (f && f->isDeclaration() &&
+        f->getIntrinsicID() == Intrinsic::not_intrinsic) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void DelayedExternalCallSearcher::update(
+    ExecutionState *current,
+    const std::set<ExecutionState*> &addedStates,
+    const std::set<ExecutionState*> &removedStates) {
+  if (!removedStates.empty()) {
+    std::set<ExecutionState *> alt = removedStates;
+    for (std::set<ExecutionState*>::const_iterator it = removedStates.begin(),
+           ie = removedStates.end(); it != ie; ++it) {
+      ExecutionState *es = *it;
+      std::set<ExecutionState*>::const_iterator it2 = delayedStates.find(es);
+      if (it2 != delayedStates.end()) {
+        delayedStates.erase(it);
+        alt.erase(alt.find(es));
+      }
+    }
+    baseSearcher->update(current, addedStates, alt);
+  } else {
+    baseSearcher->update(current, addedStates, removedStates);
+  }
+
+  if (current && !removedStates.count(current) && isExternalCall(current) &&
+      // Not mess with rollers since it cannot remove states from
+      // rollerStateStack (FIXME)
+      current->loopBB == 0) {
+    delayedStates.insert(current);
+    baseSearcher->removeState(current);
+  }
+
+  if (baseSearcher->empty() && !delayedStates.empty()) {
+    std::set<ExecutionState*> resumedStates;
+    std::set<ExecutionState*>::iterator it = delayedStates.begin();
+    resumedStates.insert(*it);
+    //llvm::errs() << "KLEE: pick a delayed state " << *it << "\n";
+    baseSearcher->update(0, resumedStates, std::set<ExecutionState*>());
+    delayedStates.erase(it);
+  }
 }

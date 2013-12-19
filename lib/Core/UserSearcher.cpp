@@ -62,6 +62,12 @@ namespace {
   UseBumpMerge("use-bump-merge", 
            cl::desc("Enable support for klee_merge() (extra experimental)"));
 
+  cl::opt<bool>
+  UseLoopSearch("use-loop-search", cl::desc("Enable support for loop testing"));
+
+  cl::opt<bool>
+  UseDelayedExternalCallSearch("delay-external-call",
+      cl::desc("Delay states which is about to call an external function, such as calloc, to reduce our footprint in memory"));
 }
 
 
@@ -96,7 +102,7 @@ Searcher *klee::constructUserSearcher(Executor &executor) {
 
   // default values
   if (CoreSearch.size() == 0) {
-    CoreSearch.push_back(Searcher::RandomPath);
+    //CoreSearch.push_back(Searcher::RandomPath); // FIXME RandomPath and DelayExternalCallSearcher incompatible
     CoreSearch.push_back(Searcher::NURS_CovNew);
   }
 
@@ -127,6 +133,14 @@ Searcher *klee::constructUserSearcher(Executor &executor) {
   
   if (UseIterativeDeepeningTimeSearch) {
     searcher = new IterativeDeepeningTimeSearcher(searcher);
+  }
+
+  if (UseLoopSearch) {
+    searcher = new LoopSearcher(executor, searcher);
+  }
+
+  if (UseDelayedExternalCallSearch) {
+    searcher = new DelayedExternalCallSearcher(executor, searcher);
   }
 
   std::ostream &os = executor.getHandler().getInfoStream();

@@ -493,6 +493,18 @@ void KModule::prepare(const Interpreter::ModuleOptions &opts,
 
     functions.push_back(kf);
     functionMap.insert(std::make_pair(it, kf));
+
+    DominatorTreeBase<BasicBlock> *DTB;
+    DTB = new DominatorTreeBase<BasicBlock>(false);
+    DTB->recalculate(*it);
+    dominatorTreeBases.push_back(DTB);
+    dominatorTreeBaseMap.insert(std::make_pair(it, DTB));
+
+    LoopInfoBase<BasicBlock, Loop> *LIB;
+    LIB = new LoopInfoBase<BasicBlock, Loop>();
+    LIB->Calculate(*DTB);
+    loopInfoBases.push_back(LIB);
+    loopInfoBaseMap.insert(std::make_pair(it, LIB));
   }
 
   /* Compute various interesting properties */

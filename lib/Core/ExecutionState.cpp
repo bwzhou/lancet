@@ -76,7 +76,9 @@ ExecutionState::ExecutionState(KFunction *kf)
     instsSinceCovNew(0),
     coveredNew(false),
     forkDisabled(false),
-    ptreeNode(0) {
+    ptreeNode(0),
+    loopBB(0),
+    loopTotalCount(0) {
   pushFrame(0, kf);
 }
 
@@ -85,7 +87,9 @@ ExecutionState::ExecutionState(const std::vector<ref<Expr> > &assumptions)
     underConstrained(false),
     constraints(assumptions),
     queryCost(0.),
-    ptreeNode(0) {
+    ptreeNode(0),
+    loopBB(0),
+    loopTotalCount(0) {
 }
 
 ExecutionState::~ExecutionState() {
@@ -123,7 +127,9 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     symbolics(state.symbolics),
     arrayNames(state.arrayNames),
     shadowObjects(state.shadowObjects),
-    incomingBBIndex(state.incomingBBIndex)
+    incomingBBIndex(state.incomingBBIndex),
+    loopBB(state.loopBB),
+    loopTotalCount(state.loopTotalCount)
 {
   for (unsigned int i=0; i<symbolics.size(); i++)
     symbolics[i].first->refCount++;
@@ -143,11 +149,15 @@ ExecutionState *ExecutionState::branch() {
 }
 
 void ExecutionState::pushFrame(KInstIterator caller, KFunction *kf) {
-  stack.push_back(StackFrame(caller,kf));
+  llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << this
+               << " enter function " << kf->function->getName() << "\n";
+  stack.push_back(StackFrame(caller, kf));
 }
 
 void ExecutionState::popFrame() {
   StackFrame &sf = stack.back();
+  llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << this
+               << " exit function " << sf.kf->function->getName() << "\n";
   for (std::vector<const MemoryObject*>::iterator it = sf.allocas.begin(), 
          ie = sf.allocas.end(); it != ie; ++it)
     addressSpace.unbindObject(*it);

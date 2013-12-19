@@ -1,0 +1,13 @@
+#!/bin/bash
+BC=$1
+LOG=$2
+MIN=$3 #minimal iterations
+MAX=$4 #maximal iterations
+shift
+shift
+shift
+shift
+ARG=$@
+CMD="time Release+Asserts/bin/klee -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
+echo $CMD
+eval $CMD

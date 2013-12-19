@@ -22,6 +22,10 @@
 #include <set>
 #include <vector>
 
+namespace llvm {
+  class Loop;
+}
+
 namespace klee {
   class Array;
   class CallPathNode;
@@ -108,12 +112,14 @@ public:
 
   unsigned incomingBBIndex;
 
+  llvm::Loop* loopBB;
+  unsigned loopTotalCount;
   std::string getFnAlias(std::string fn);
   void addFnAlias(std::string old_fn, std::string new_fn);
   void removeFnAlias(std::string fn);
   
 private:
-  ExecutionState() : fakeState(false), underConstrained(0), ptreeNode(0) {}
+  ExecutionState() : fakeState(false), underConstrained(0), ptreeNode(0), loopBB(0), loopTotalCount(0) {}
 
 public:
   ExecutionState(KFunction *kf);
