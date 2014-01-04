@@ -261,7 +261,8 @@ private:
   void executeCall(ExecutionState &state, 
                    KInstruction *ki,
                    llvm::Function *f,
-                   std::vector< ref<Expr> > &arguments);
+                   std::vector< ref<Expr> > &arguments,
+                   std::vector< ref<Expr> > &concrete_arguments);
                    
   // do address resolution / object binding / out of bounds checking
   // and perform the operation
@@ -269,6 +270,7 @@ private:
                               bool isWrite,
                               ref<Expr> address,
                               ref<Expr> value /* undef if read */,
+                              ref<Expr> concrete_value /* undef if read */,
                               KInstruction *target /* undef if write */);
 
   void executeMakeSymbolic(ExecutionState &state, const MemoryObject *mo,
@@ -285,7 +287,8 @@ private:
   // Fork current and return states in which condition holds / does
   // not hold, respectively. One of the states is necessarily the
   // current state, and one of the states may be null.
-  StatePair fork(ExecutionState &current, ref<Expr> condition, bool isInternal);
+  StatePair fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
+                 ref<Expr> concrete_condition = 0);
 
   /// Add the given (boolean) condition as a constraint on state. This
   /// function is a wrapper around the state's addConstraint function
@@ -314,10 +317,17 @@ private:
   void bindLocal(KInstruction *target, 
                  ExecutionState &state, 
                  ref<Expr> value);
+  void bindLocalConcrete(KInstruction *target, 
+                         ExecutionState &state, 
+                         ref<Expr> value);
   void bindArgument(KFunction *kf, 
                     unsigned index,
                     ExecutionState &state,
                     ref<Expr> value);
+  void bindArgumentConcrete(KFunction *kf, 
+                            unsigned index,
+                            ExecutionState &state,
+                            ref<Expr> value);
 
   ref<klee::ConstantExpr> evalConstantExpr(const llvm::ConstantExpr *ce);
 

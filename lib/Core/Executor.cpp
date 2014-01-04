@@ -258,6 +258,11 @@ namespace {
   MaxMemoryInhibit("max-memory-inhibit",
             cl::desc("Inhibit forking at memory cap (vs. random terminate) (default=on)"),
             cl::init(true));
+
+  cl::opt<bool>
+  UseConcreteExplorer("use-concrete-explorer",
+                      cl::desc("Concretely explore from program entry to the target loop (default=off)"),
+                      cl::init(false));
 }
 
 cl::opt<bool>
@@ -265,7 +270,9 @@ TargetedLoopOnly("targeted-loop-only",
                  cl::desc("Explore only the targeted loops specified by user with loop attribute (default=off)"),
                  cl::init(false));
 
-uint64_t executedInstructionCount = 0;
+namespace {
+  uint64_t executedInstructionCount = 0;
+}
 
 namespace klee {
   RNG theRNG;
@@ -726,7 +733,8 @@ void Executor::branch(ExecutionState &state,
 }
 
 Executor::StatePair 
-Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
+Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
+               ref<Expr> concrete_condition) {
   Solver::Validity res;
   std::map< ExecutionState*, std::vector<SeedInfo> >::iterator it = 
     seedMap.find(&current);
@@ -880,21 +888,23 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
 
     ++stats::forks;
 
-    falseState = trueState->branch();
-
-    if (trueState->loopBB) {
-      std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
-                << " roller state " << trueState
-                << " branched a new state " << falseState
-                << std::endl;
+    if (UseConcreteExplorer) {
+      falseState = trueState;
     } else {
-      std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
-                << " state " << trueState
-                << " branched a new state " << falseState
-                << std::endl;
+      falseState = trueState->branch();
+      addedStates.insert(falseState);
+      if (trueState->loopBB) {
+        std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
+                  << " roller state " << trueState
+                  << " branched a new state " << falseState
+                  << std::endl;
+      } else {
+        std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
+                  << " state " << trueState
+                  << " branched a new state " << falseState
+                  << std::endl;
+      }
     }
-
-    addedStates.insert(falseState);
 
     if (RandomizeFork && theRNG.getBool())
       std::swap(trueState, falseState);
@@ -933,11 +943,13 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       }
     }
 
-    current.ptreeNode->data = 0;
-    std::pair<PTree::Node*, PTree::Node*> res =
-      processTree->split(current.ptreeNode, falseState, trueState);
-    falseState->ptreeNode = res.first;
-    trueState->ptreeNode = res.second;
+    if (!UseConcreteExplorer) {
+      current.ptreeNode->data = 0;
+      std::pair<PTree::Node*, PTree::Node*> res =
+        processTree->split(current.ptreeNode, falseState, trueState);
+      falseState->ptreeNode = res.first;
+      trueState->ptreeNode = res.second;
+    }
 
     if (!isInternal) {
       if (pathWriter) {
@@ -952,8 +964,25 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal) {
       }
     }
 
-    addConstraint(*trueState, condition);
-    addConstraint(*falseState, Expr::createIsZero(condition));
+    if (!UseConcreteExplorer) {
+      addConstraint(*trueState, condition);
+      addConstraint(*falseState, Expr::createIsZero(condition));
+    }
+    
+    if (UseConcreteExplorer) {
+      assert(!concrete_condition.isNull() && "concrete_condition is empty");
+      assert(isa<ConstantExpr>(concrete_condition) &&
+             "concrete_condition must be constant");
+      if (!cast<ConstantExpr>(concrete_condition)->getZExtValue()) {
+        // if the concrete condition is false, then just explore the false
+        // branch and disable the true branch.
+        addConstraint(*falseState, Expr::createIsZero(condition));
+        trueState = NULL;
+      } else {
+        addConstraint(*trueState, condition);
+        falseState = NULL;
+      }
+    }
 
     // Kinda gross, do we even really still want this option?
     if (MaxDepth && MaxDepth<=trueState->depth) {
@@ -1084,9 +1113,21 @@ void Executor::bindLocal(KInstruction *target, ExecutionState &state,
   getDestCell(state, target).value = value;
 }
 
+void Executor::bindLocalConcrete(KInstruction *target, ExecutionState &state, 
+                                 ref<Expr> value) {
+  assert(isa<ConstantExpr>(value) && "not a constant expression");
+  getDestCell(state, target).concrete_value = value;
+}
+
 void Executor::bindArgument(KFunction *kf, unsigned index, 
                             ExecutionState &state, ref<Expr> value) {
   getArgumentCell(state, kf, index).value = value;
+}
+
+void Executor::bindArgumentConcrete(KFunction *kf, unsigned index, 
+                                    ExecutionState &state, ref<Expr> value) {
+  assert(isa<ConstantExpr>(value) && "not a constant expression");
+  getArgumentCell(state, kf, index).concrete_value = value;
 }
 
 ref<Expr> Executor::toUnique(const ExecutionState &state, 
@@ -1151,6 +1192,7 @@ void Executor::executeGetValue(ExecutionState &state,
     assert(success && "FIXME: Unhandled solver failure");
     (void) success;
     bindLocal(target, state, value);
+    bindLocalConcrete(target, state, value);
   } else {
     std::set< ref<Expr> > values;
     for (std::vector<SeedInfo>::iterator siit = it->second.begin(), 
@@ -1175,8 +1217,10 @@ void Executor::executeGetValue(ExecutionState &state,
     for (std::set< ref<Expr> >::iterator vit = values.begin(), 
            vie = values.end(); vit != vie; ++vit) {
       ExecutionState *es = *bit;
-      if (es)
+      if (es) {
         bindLocal(target, *es, *vit);
+        bindLocalConcrete(target, *es, *vit);
+      }
       ++bit;
     }
   }
@@ -1203,7 +1247,8 @@ void Executor::stepInstruction(ExecutionState &state) {
 void Executor::executeCall(ExecutionState &state, 
                            KInstruction *ki,
                            Function *f,
-                           std::vector< ref<Expr> > &arguments) {
+                           std::vector< ref<Expr> > &arguments,
+                           std::vector< ref<Expr> > &concrete_arguments) {
   Instruction *i = ki->inst;
   if (f && f->isDeclaration()) {
     switch(f->getIntrinsicID()) {
@@ -1224,6 +1269,7 @@ void Executor::executeCall(ExecutionState &state,
       Expr::Width WordSize = Context::get().getPointerWidth();
       if (WordSize == Expr::Int32) {
         executeMemoryOperation(state, true, arguments[0], 
+                               sf.varargs->getBaseExpr(),
                                sf.varargs->getBaseExpr(), 0);
       } else {
         assert(WordSize == Expr::Int64 && "Unknown word size!");
@@ -1232,18 +1278,22 @@ void Executor::executeCall(ExecutionState &state,
         // instead of implementing it, we can do a simple hack: just
         // make a function believe that all varargs are on stack.
         executeMemoryOperation(state, true, arguments[0],
+                               ConstantExpr::create(48, 32),
                                ConstantExpr::create(48, 32), 0); // gp_offset
         executeMemoryOperation(state, true,
                                AddExpr::create(arguments[0], 
                                                ConstantExpr::create(4, 64)),
+                               ConstantExpr::create(304, 32),
                                ConstantExpr::create(304, 32), 0); // fp_offset
         executeMemoryOperation(state, true,
                                AddExpr::create(arguments[0], 
                                                ConstantExpr::create(8, 64)),
+                               sf.varargs->getBaseExpr(),
                                sf.varargs->getBaseExpr(), 0); // overflow_arg_area
         executeMemoryOperation(state, true,
                                AddExpr::create(arguments[0], 
                                                ConstantExpr::create(16, 64)),
+                               ConstantExpr::create(0, 64),
                                ConstantExpr::create(0, 64), 0); // reg_save_area
       }
       break;
@@ -1326,11 +1376,11 @@ void Executor::executeCall(ExecutionState &state,
         // size. This happens to work fir x86-32 and x86-64, however.
         Expr::Width WordSize = Context::get().getPointerWidth();
         if (WordSize == Expr::Int32) {
-          os->write(offset, arguments[i]);
+          os->write(offset, arguments[i], concrete_arguments[i]);
           offset += Expr::getMinBytesForWidth(arguments[i]->getWidth());
         } else {
           assert(WordSize == Expr::Int64 && "Unknown word size!");
-          os->write(offset, arguments[i]);
+          os->write(offset, arguments[i], concrete_arguments[i]);
           offset += llvm::RoundUpToAlignment(arguments[i]->getWidth(), 
                                              WordSize) / 8;
         }
@@ -1338,8 +1388,10 @@ void Executor::executeCall(ExecutionState &state,
     }
 
     unsigned numFormals = f->arg_size();
-    for (unsigned i=0; i<numFormals; ++i) 
+    for (unsigned i=0; i<numFormals; ++i) {
       bindArgument(kf, i, state, arguments[i]);
+      bindArgumentConcrete(kf, i, state, concrete_arguments[i]);
+    }
   }
 }
 
@@ -1385,6 +1437,7 @@ void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src,
         LIB->getLoopDepth(src) < LIB->getLoopDepth(dst)) {
       if (state.loopBB == 0) { // explorer finds a new loop
         if (!TargetedLoopOnly || NULL != Start->getMetadata("loop")) {
+          UseConcreteExplorer = false;
           // Transform an explorer into a roller
           state.loopBB = LIB->getLoopFor(dst);
 
@@ -1486,6 +1539,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
               << "\n";
   }
   Instruction *i = ki->inst;
+  //i->dump();
   switch (i->getOpcode()) {
     // Control flow
   case Instruction::Ret: {
@@ -1494,9 +1548,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Instruction *caller = kcaller ? kcaller->inst : 0;
     bool isVoidReturn = (ri->getNumOperands() == 0);
     ref<Expr> result = ConstantExpr::alloc(0, Expr::Bool);
+    ref<Expr> concrete_result = ConstantExpr::alloc(0, Expr::Bool);
     
     if (!isVoidReturn) {
       result = eval(ki, 0, state).value;
+      concrete_result = eval(ki, 0, state).concrete_value;
     }
     
     if (state.stack.size() <= 1) {
@@ -1536,12 +1592,15 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 #endif
             if (isSExt) {
               result = SExtExpr::create(result, to);
+              concrete_result = SExtExpr::create(concrete_result, to);
             } else {
               result = ZExtExpr::create(result, to);
+              concrete_result = ZExtExpr::create(concrete_result, to);
             }
           }
 
           bindLocal(kcaller, state, result);
+          bindLocalConcrete(kcaller, state, concrete_result);
         }
       } else {
         // We check that the return value has no users instead of
@@ -1586,7 +1645,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       assert(bi->getCondition() == bi->getOperand(0) &&
              "Wrong operand index!");
       ref<Expr> cond = eval(ki, 0, state).value;
-      Executor::StatePair branches = fork(state, cond, false);
+      ref<Expr> concrete_cond = eval(ki, 0, state).concrete_value;
+      Executor::StatePair branches = fork(state, cond, false, concrete_cond);
 
       // NOTE: There is a hidden dependency here, markBranchVisited
       // requires that we still be in the context of the branch
@@ -1705,9 +1765,13 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     // evaluate arguments
     std::vector< ref<Expr> > arguments;
     arguments.reserve(numArgs);
+    std::vector< ref<Expr> > concrete_arguments;
+    concrete_arguments.reserve(numArgs);
 
-    for (unsigned j=0; j<numArgs; ++j)
+    for (unsigned j=0; j<numArgs; ++j) {
       arguments.push_back(eval(ki, j+1, state).value);
+      concrete_arguments.push_back(eval(ki, j+1, state).concrete_value);
+    }
 
     if (f) {
       const FunctionType *fType = 
@@ -1742,8 +1806,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 #endif
               if (isSExt) {
                 arguments[i] = SExtExpr::create(arguments[i], to);
+                concrete_arguments[i] = SExtExpr::create(concrete_arguments[i], to);
               } else {
                 arguments[i] = ZExtExpr::create(arguments[i], to);
+                concrete_arguments[i] = ZExtExpr::create(concrete_arguments[i], to);
               }
             }
           }
@@ -1752,7 +1818,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
         }
       }
 
-      executeCall(state, ki, f, arguments);
+      executeCall(state, ki, f, arguments, concrete_arguments);
     } else {
       ref<Expr> v = eval(ki, 0, state).value;
 
@@ -1779,7 +1845,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
                                 "resolved symbolic function pointer to: %s",
                                 f->getName().data());
 
-            executeCall(*res.first, ki, f, arguments);
+            executeCall(*res.first, ki, f, arguments, concrete_arguments);
           } else {
             if (!hasInvalid) {
               terminateStateOnExecError(state, "invalid function pointer");
@@ -1797,10 +1863,13 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
   case Instruction::PHI: {
 #if LLVM_VERSION_CODE >= LLVM_VERSION(3, 0)
     ref<Expr> result = eval(ki, state.incomingBBIndex, state).value;
+    ref<Expr> concrete_result = eval(ki, state.incomingBBIndex, state).concrete_value;
 #else
     ref<Expr> result = eval(ki, state.incomingBBIndex * 2, state).value;
+    ref<Expr> concrete_result = eval(ki, state.incomingBBIndex * 2, state).concrete_value;
 #endif
     bindLocal(ki, state, result);
+    bindLocalConcrete(ki, state, concrete_result);
     break;
   }
 
@@ -1814,6 +1883,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> fExpr = eval(ki, 2, state).value;
     ref<Expr> result = SelectExpr::create(cond, tExpr, fExpr);
     bindLocal(ki, state, result);
+    cond = eval(ki, 0, state).concrete_value;
+    tExpr = eval(ki, 1, state).concrete_value;
+    fExpr = eval(ki, 2, state).concrete_value;
+    result = SelectExpr::create(cond, tExpr, fExpr);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1827,6 +1901,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
     bindLocal(ki, state, AddExpr::create(left, right));
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    bindLocalConcrete(ki, state, AddExpr::create(left, right));
     break;
   }
 
@@ -1834,6 +1911,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
     bindLocal(ki, state, SubExpr::create(left, right));
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    bindLocalConcrete(ki, state, SubExpr::create(left, right));
     break;
   }
  
@@ -1841,6 +1921,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> left = eval(ki, 0, state).value;
     ref<Expr> right = eval(ki, 1, state).value;
     bindLocal(ki, state, MulExpr::create(left, right));
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    bindLocalConcrete(ki, state, MulExpr::create(left, right));
     break;
   }
 
@@ -1849,6 +1932,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = UDivExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = UDivExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1857,6 +1944,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = SDivExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = SDivExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1865,6 +1956,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = URemExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = URemExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
  
@@ -1873,6 +1968,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = SRemExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = SRemExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1881,6 +1980,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = AndExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = AndExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1889,6 +1992,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = OrExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = OrExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1897,6 +2004,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = XorExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = XorExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1905,6 +2016,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = ShlExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = ShlExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1913,6 +2028,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = LShrExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = LShrExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1921,6 +2040,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> right = eval(ki, 1, state).value;
     ref<Expr> result = AShrExpr::create(left, right);
     bindLocal(ki, state, result);
+    left = eval(ki, 0, state).concrete_value;
+    right = eval(ki, 1, state).concrete_value;
+    result = AShrExpr::create(left, right);
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -1936,6 +2059,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = EqExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = EqExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -1944,6 +2071,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = NeExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = NeExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -1951,7 +2082,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> left = eval(ki, 0, state).value;
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = UgtExpr::create(left, right);
-      bindLocal(ki, state,result);
+      bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = UgtExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -1960,6 +2095,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = UgeExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = UgeExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -1968,6 +2107,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = UltExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = UltExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -1976,6 +2119,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = UleExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = UleExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -1984,6 +2131,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = SgtExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = SgtExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -1992,6 +2143,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = SgeExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = SgeExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -2000,6 +2155,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = SltExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = SltExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -2008,6 +2167,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> right = eval(ki, 1, state).value;
       ref<Expr> result = SleExpr::create(left, right);
       bindLocal(ki, state, result);
+      left = eval(ki, 0, state).concrete_value;
+      right = eval(ki, 1, state).concrete_value;
+      result = SleExpr::create(left, right);
+      bindLocalConcrete(ki, state, result);
       break;
     }
 
@@ -2025,6 +2188,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> size = Expr::createPointer(elementSize);
     if (ai->isArrayAllocation()) {
       ref<Expr> count = eval(ki, 0, state).value;
+      if (UseConcreteExplorer) {
+        count = eval(ki, 0, state).concrete_value;
+      }
       count = Expr::createZExtToPointerWidth(count);
       size = MulExpr::create(size, count);
     }
@@ -2035,20 +2201,26 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 
   case Instruction::Load: {
     ref<Expr> base = eval(ki, 0, state).value;
-    executeMemoryOperation(state, false, base, 0, ki);
+    if (UseConcreteExplorer) {
+      base = eval(ki, 0, state).concrete_value;
+    }
+    executeMemoryOperation(state, false, base, 0, 0, ki);
     break;
   }
   case Instruction::Store: {
     ref<Expr> base = eval(ki, 1, state).value;
+    if (UseConcreteExplorer) {
+      base = eval(ki, 1, state).concrete_value;
+    }
     ref<Expr> value = eval(ki, 0, state).value;
-    executeMemoryOperation(state, true, base, value, 0);
+    ref<Expr> concrete_value = eval(ki, 0, state).concrete_value;
+    executeMemoryOperation(state, true, base, value, concrete_value, 0);
     break;
   }
 
   case Instruction::GetElementPtr: {
     KGEPInstruction *kgepi = static_cast<KGEPInstruction*>(ki);
     ref<Expr> base = eval(ki, 0, state).value;
-
     for (std::vector< std::pair<unsigned, uint64_t> >::iterator 
            it = kgepi->indices.begin(), ie = kgepi->indices.end(); 
          it != ie; ++it) {
@@ -2062,6 +2234,21 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       base = AddExpr::create(base,
                              Expr::createPointer(kgepi->offset));
     bindLocal(ki, state, base);
+
+    base = eval(ki, 0, state).concrete_value;
+    for (std::vector< std::pair<unsigned, uint64_t> >::iterator 
+           it = kgepi->indices.begin(), ie = kgepi->indices.end(); 
+         it != ie; ++it) {
+      uint64_t elementSize = it->second;
+      ref<Expr> index = eval(ki, it->first, state).concrete_value;
+      base = AddExpr::create(base,
+                             MulExpr::create(Expr::createSExtToPointerWidth(index),
+                                             Expr::createPointer(elementSize)));
+    }
+    if (kgepi->offset)
+      base = AddExpr::create(base,
+                             Expr::createPointer(kgepi->offset));
+    bindLocalConcrete(ki, state, base);
     break;
   }
 
@@ -2072,6 +2259,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
                                            0,
                                            getWidthForLLVMType(ci->getType()));
     bindLocal(ki, state, result);
+    result = ExtractExpr::create(eval(ki, 0, state).concrete_value,
+                                 0,
+                                 getWidthForLLVMType(ci->getType()));
+    bindLocalConcrete(ki, state, result);
     break;
   }
   case Instruction::ZExt: {
@@ -2079,6 +2270,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> result = ZExtExpr::create(eval(ki, 0, state).value,
                                         getWidthForLLVMType(ci->getType()));
     bindLocal(ki, state, result);
+    result = ZExtExpr::create(eval(ki, 0, state).concrete_value,
+                              getWidthForLLVMType(ci->getType()));
+    bindLocalConcrete(ki, state, result);
     break;
   }
   case Instruction::SExt: {
@@ -2086,6 +2280,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> result = SExtExpr::create(eval(ki, 0, state).value,
                                         getWidthForLLVMType(ci->getType()));
     bindLocal(ki, state, result);
+    result = SExtExpr::create(eval(ki, 0, state).concrete_value,
+                              getWidthForLLVMType(ci->getType()));
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
@@ -2094,6 +2291,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Expr::Width pType = getWidthForLLVMType(ci->getType());
     ref<Expr> arg = eval(ki, 0, state).value;
     bindLocal(ki, state, ZExtExpr::create(arg, pType));
+    arg = eval(ki, 0, state).concrete_value;
+    bindLocalConcrete(ki, state, ZExtExpr::create(arg, pType));
     break;
   } 
   case Instruction::PtrToInt: {
@@ -2101,21 +2300,25 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Expr::Width iType = getWidthForLLVMType(ci->getType());
     ref<Expr> arg = eval(ki, 0, state).value;
     bindLocal(ki, state, ZExtExpr::create(arg, iType));
+    arg = eval(ki, 0, state).concrete_value;
+    bindLocalConcrete(ki, state, ZExtExpr::create(arg, iType));
     break;
   }
 
   case Instruction::BitCast: {
     ref<Expr> result = eval(ki, 0, state).value;
     bindLocal(ki, state, result);
+    result = eval(ki, 0, state).concrete_value;
+    bindLocalConcrete(ki, state, result);
     break;
   }
 
     // Floating point instructions
 
   case Instruction::FAdd: {
-    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).concrete_value,
                                         "floating point");
-    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).value,
+    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).concrete_value,
                                          "floating point");
     if (!fpWidthToSemantics(left->getWidth()) ||
         !fpWidthToSemantics(right->getWidth()))
@@ -2129,13 +2332,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Res.add(APFloat(right->getAPValue()), APFloat::rmNearestTiesToEven);
 #endif
     bindLocal(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
     break;
   }
 
   case Instruction::FSub: {
-    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).concrete_value,
                                         "floating point");
-    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).value,
+    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).concrete_value,
                                          "floating point");
     if (!fpWidthToSemantics(left->getWidth()) ||
         !fpWidthToSemantics(right->getWidth()))
@@ -2148,13 +2352,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Res.subtract(APFloat(right->getAPValue()), APFloat::rmNearestTiesToEven);
 #endif
     bindLocal(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
     break;
   }
  
   case Instruction::FMul: {
-    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).concrete_value,
                                         "floating point");
-    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).value,
+    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).concrete_value,
                                          "floating point");
     if (!fpWidthToSemantics(left->getWidth()) ||
         !fpWidthToSemantics(right->getWidth()))
@@ -2168,13 +2373,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Res.multiply(APFloat(right->getAPValue()), APFloat::rmNearestTiesToEven);
 #endif
     bindLocal(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
     break;
   }
 
   case Instruction::FDiv: {
-    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).concrete_value,
                                         "floating point");
-    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).value,
+    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).concrete_value,
                                          "floating point");
     if (!fpWidthToSemantics(left->getWidth()) ||
         !fpWidthToSemantics(right->getWidth()))
@@ -2188,13 +2394,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Res.divide(APFloat(right->getAPValue()), APFloat::rmNearestTiesToEven);
 #endif
     bindLocal(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
     break;
   }
 
   case Instruction::FRem: {
-    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).concrete_value,
                                         "floating point");
-    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).value,
+    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).concrete_value,
                                          "floating point");
     if (!fpWidthToSemantics(left->getWidth()) ||
         !fpWidthToSemantics(right->getWidth()))
@@ -2207,13 +2414,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Res.mod(APFloat(right->getAPValue()), APFloat::rmNearestTiesToEven);
 #endif
     bindLocal(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(Res.bitcastToAPInt()));
     break;
   }
 
   case Instruction::FPTrunc: {
     FPTruncInst *fi = cast<FPTruncInst>(i);
     Expr::Width resultType = getWidthForLLVMType(fi->getType());
-    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).concrete_value,
                                        "floating point");
     if (!fpWidthToSemantics(arg->getWidth()) || resultType > arg->getWidth())
       return terminateStateOnExecError(state, "Unsupported FPTrunc operation");
@@ -2228,13 +2436,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
                 llvm::APFloat::rmNearestTiesToEven,
                 &losesInfo);
     bindLocal(ki, state, ConstantExpr::alloc(Res));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(Res));
     break;
   }
 
   case Instruction::FPExt: {
     FPExtInst *fi = cast<FPExtInst>(i);
     Expr::Width resultType = getWidthForLLVMType(fi->getType());
-    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).concrete_value,
                                         "floating point");
     if (!fpWidthToSemantics(arg->getWidth()) || arg->getWidth() > resultType)
       return terminateStateOnExecError(state, "Unsupported FPExt operation");
@@ -2248,13 +2457,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
                 llvm::APFloat::rmNearestTiesToEven,
                 &losesInfo);
     bindLocal(ki, state, ConstantExpr::alloc(Res));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(Res));
     break;
   }
 
   case Instruction::FPToUI: {
     FPToUIInst *fi = cast<FPToUIInst>(i);
     Expr::Width resultType = getWidthForLLVMType(fi->getType());
-    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).concrete_value,
                                        "floating point");
     if (!fpWidthToSemantics(arg->getWidth()) || resultType > 64)
       return terminateStateOnExecError(state, "Unsupported FPToUI operation");
@@ -2269,13 +2479,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Arg.convertToInteger(&value, resultType, false,
                          llvm::APFloat::rmTowardZero, &isExact);
     bindLocal(ki, state, ConstantExpr::alloc(value, resultType));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(value, resultType));
     break;
   }
 
   case Instruction::FPToSI: {
     FPToSIInst *fi = cast<FPToSIInst>(i);
     Expr::Width resultType = getWidthForLLVMType(fi->getType());
-    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).concrete_value,
                                        "floating point");
     if (!fpWidthToSemantics(arg->getWidth()) || resultType > 64)
       return terminateStateOnExecError(state, "Unsupported FPToSI operation");
@@ -2290,13 +2501,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     Arg.convertToInteger(&value, resultType, true,
                          llvm::APFloat::rmTowardZero, &isExact);
     bindLocal(ki, state, ConstantExpr::alloc(value, resultType));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(value, resultType));
     break;
   }
 
   case Instruction::UIToFP: {
     UIToFPInst *fi = cast<UIToFPInst>(i);
     Expr::Width resultType = getWidthForLLVMType(fi->getType());
-    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).concrete_value,
                                        "floating point");
     const llvm::fltSemantics *semantics = fpWidthToSemantics(resultType);
     if (!semantics)
@@ -2306,13 +2518,14 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
                        llvm::APFloat::rmNearestTiesToEven);
 
     bindLocal(ki, state, ConstantExpr::alloc(f));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(f));
     break;
   }
 
   case Instruction::SIToFP: {
     SIToFPInst *fi = cast<SIToFPInst>(i);
     Expr::Width resultType = getWidthForLLVMType(fi->getType());
-    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> arg = toConstant(state, eval(ki, 0, state).concrete_value,
                                        "floating point");
     const llvm::fltSemantics *semantics = fpWidthToSemantics(resultType);
     if (!semantics)
@@ -2322,14 +2535,15 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
                        llvm::APFloat::rmNearestTiesToEven);
 
     bindLocal(ki, state, ConstantExpr::alloc(f));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(f));
     break;
   }
 
   case Instruction::FCmp: {
     FCmpInst *fi = cast<FCmpInst>(i);
-    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).value,
+    ref<ConstantExpr> left = toConstant(state, eval(ki, 0, state).concrete_value,
                                         "floating point");
-    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).value,
+    ref<ConstantExpr> right = toConstant(state, eval(ki, 1, state).concrete_value,
                                          "floating point");
     if (!fpWidthToSemantics(left->getWidth()) ||
         !fpWidthToSemantics(right->getWidth()))
@@ -2420,8 +2634,10 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     }
 
     bindLocal(ki, state, ConstantExpr::alloc(Result, Expr::Bool));
+    bindLocalConcrete(ki, state, ConstantExpr::alloc(Result, Expr::Bool));
     break;
   }
+
   case Instruction::InsertValue: {
     KGEPInstruction *kgepi = static_cast<KGEPInstruction*>(ki);
 
@@ -2447,8 +2663,32 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       result = val;
 
     bindLocal(ki, state, result);
+
+    agg = eval(ki, 0, state).concrete_value;
+    val = eval(ki, 1, state).concrete_value;
+
+    l = NULL;
+    r = NULL;
+    lOffset = kgepi->offset*8, rOffset = kgepi->offset*8 + val->getWidth();
+
+    if (lOffset > 0)
+      l = ExtractExpr::create(agg, 0, lOffset);
+    if (rOffset < agg->getWidth())
+      r = ExtractExpr::create(agg, rOffset, agg->getWidth() - rOffset);
+
+    if (!l.isNull() && !r.isNull())
+      result = ConcatExpr::create(r, ConcatExpr::create(val, l));
+    else if (!l.isNull())
+      result = ConcatExpr::create(val, l);
+    else if (!r.isNull())
+      result = ConcatExpr::create(r, val);
+    else
+      result = val;
+
+    bindLocalConcrete(ki, state, result);
     break;
   }
+
   case Instruction::ExtractValue: {
     KGEPInstruction *kgepi = static_cast<KGEPInstruction*>(ki);
 
@@ -2457,6 +2697,12 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     ref<Expr> result = ExtractExpr::create(agg, kgepi->offset*8, getWidthForLLVMType(i->getType()));
 
     bindLocal(ki, state, result);
+
+    agg = eval(ki, 0, state).concrete_value;
+
+    result = ExtractExpr::create(agg, kgepi->offset*8, getWidthForLLVMType(i->getType()));
+
+    bindLocalConcrete(ki, state, result);
     break;
   }
  
@@ -2559,6 +2805,7 @@ void Executor::bindModuleConstants() {
   for (unsigned i=0; i<kmodule->constants.size(); ++i) {
     Cell &c = kmodule->constantTable[i];
     c.value = evalConstant(kmodule->constants[i]);
+    c.concrete_value = evalConstant(kmodule->constants[i]);
   }
 }
 
@@ -2984,6 +3231,7 @@ void Executor::callExternalFunction(ExecutionState &state,
     ref<Expr> e = ConstantExpr::fromMemory((void*) args, 
                                            getWidthForLLVMType(resultType));
     bindLocal(target, state, e);
+    bindLocalConcrete(target, state, e);
   }
 }
 
@@ -3020,6 +3268,10 @@ ObjectState *Executor::bindObjectInState(ExecutionState &state,
                                          bool isLocal,
                                          const Array *array) {
   ObjectState *os = array ? new ObjectState(mo, array) : new ObjectState(mo);
+  if (array) { // Copy concrete value over to the new ObjectState
+    const ObjectState *oldOs = state.addressSpace.findObject(mo);
+    memcpy(os->concreteStore, oldOs->concreteStore, mo->size);
+  }
   state.addressSpace.bindObject(mo, os);
 
   // Its possible that multiple bindings of the same mo in the state
@@ -3043,8 +3295,10 @@ void Executor::executeAlloc(ExecutionState &state,
     MemoryObject *mo = memory->allocate(CE->getZExtValue(), isLocal, false, 
                                         state.prevPC->inst);
     if (!mo) {
-      bindLocal(target, state, 
-                ConstantExpr::alloc(0, Context::get().getPointerWidth()));
+      bindLocal(target, state,
+          ConstantExpr::alloc(0, Context::get().getPointerWidth()));
+      bindLocalConcrete(target, state,
+          ConstantExpr::alloc(0, Context::get().getPointerWidth()));
     } else {
       ObjectState *os = bindObjectInState(state, mo, isLocal);
       if (zeroMemory) {
@@ -3053,11 +3307,12 @@ void Executor::executeAlloc(ExecutionState &state,
         os->initializeToRandom();
       }
       bindLocal(target, state, mo->getBaseExpr());
+      bindLocalConcrete(target, state, mo->getBaseExpr());
       
       if (reallocFrom) {
         unsigned count = std::min(reallocFrom->size, os->size);
         for (unsigned i=0; i<count; i++)
-          os->write(i, reallocFrom->read8(i));
+          os->write(i, reallocFrom->read8(i), reallocFrom->read8Concrete(i));
         state.addressSpace.unbindObject(reallocFrom->getObject());
       }
     }
@@ -3117,8 +3372,10 @@ void Executor::executeAlloc(ExecutionState &state,
                true);
         if (hugeSize.first) {
           klee_message("NOTE: found huge malloc, returning 0");
-          bindLocal(target, *hugeSize.first, 
-                    ConstantExpr::alloc(0, Context::get().getPointerWidth()));
+          bindLocal(target, *hugeSize.first,
+              ConstantExpr::alloc(0, Context::get().getPointerWidth()));
+          bindLocalConcrete(target, *hugeSize.first,
+              ConstantExpr::alloc(0, Context::get().getPointerWidth()));
         }
         
         if (hugeSize.second) {
@@ -3145,8 +3402,10 @@ void Executor::executeFree(ExecutionState &state,
                            KInstruction *target) {
   StatePair zeroPointer = fork(state, Expr::createIsZero(address), true);
   if (zeroPointer.first) {
-    if (target)
+    if (target) {
       bindLocal(target, *zeroPointer.first, Expr::createPointer(0));
+      bindLocalConcrete(target, *zeroPointer.first, Expr::createPointer(0));
+    }
   }
   if (zeroPointer.second) { // address != 0
     ExactResolutionList rl;
@@ -3167,8 +3426,10 @@ void Executor::executeFree(ExecutionState &state,
                               getAddressInfo(*it->second, address));
       } else {
         it->second->addressSpace.unbindObject(mo);
-        if (target)
+        if (target) {
           bindLocal(target, *it->second, Expr::createPointer(0));
+          bindLocalConcrete(target, *it->second, Expr::createPointer(0));
+        }
       }
     }
   }
@@ -3209,6 +3470,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
                                       bool isWrite,
                                       ref<Expr> address,
                                       ref<Expr> value /* undef if read */,
+                                      ref<Expr> concrete_value /* undef if read */,
                                       KInstruction *target /* undef if write */) {
   Expr::Width type = (isWrite ? value->getWidth() : 
                      getWidthForLLVMType(target->inst->getType()));
@@ -3261,15 +3523,14 @@ void Executor::executeMemoryOperation(ExecutionState &state,
                                 "readonly.err");
         } else {
           ObjectState *wos = state.addressSpace.getWriteable(mo, os);
-          wos->write(offset, value);
+          wos->write(offset, value, concrete_value);
         }          
       } else {
         ref<Expr> result = os->read(offset, type);
-        
         if (interpreterOpts.MakeConcreteSymbolic)
           result = replaceReadWithSymbolic(state, result);
-        
         bindLocal(target, state, result);
+        bindLocalConcrete(target, state, os->readConcrete(offset, type));
       }
 
       return;
@@ -3292,6 +3553,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
     const MemoryObject *mo = i->first;
     const ObjectState *os = i->second;
     ref<Expr> inBounds = mo->getBoundsCheckPointer(address, bytes);
+    ref<Expr> offset = mo->getOffsetExpr(address);
     
     StatePair branches = fork(*unbound, inBounds, true);
     ExecutionState *bound = branches.first;
@@ -3305,11 +3567,12 @@ void Executor::executeMemoryOperation(ExecutionState &state,
                                 "readonly.err");
         } else {
           ObjectState *wos = bound->addressSpace.getWriteable(mo, os);
-          wos->write(mo->getOffsetExpr(address), value);
+          wos->write(offset, value, concrete_value);
         }
       } else {
-        ref<Expr> result = os->read(mo->getOffsetExpr(address), type);
+        ref<Expr> result = os->read(offset, type);
         bindLocal(target, *bound, result);
+        bindLocalConcrete(target, *bound, os->readConcrete(offset, type));
       }
     }
 
@@ -3466,8 +3729,11 @@ void Executor::runFunctionAsMain(Function *f,
     statsTracker->framePushed(*state, 0);
 
   assert(arguments.size() == f->arg_size() && "wrong number of arguments");
-  for (unsigned i = 0, e = f->arg_size(); i != e; ++i)
+  for (unsigned i = 0, e = f->arg_size(); i != e; ++i) {
     bindArgument(kf, i, *state, arguments[i]);
+    // FIXME what if symbolic arguments?
+    bindArgumentConcrete(kf, i, *state, arguments[i]);
+  }
 
   if (argvMO) {
     ObjectState *argvOS = bindObjectInState(*state, argvMO, false);

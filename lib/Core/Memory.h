@@ -155,6 +155,7 @@ private:
 
   const MemoryObject *object;
 
+  friend class Executor;
   uint8_t *concreteStore;
   // XXX cleanup name of flushMask (its backwards or something)
   BitArray *concreteMask;
@@ -195,12 +196,15 @@ public:
   void initializeToRandom();
 
   ref<Expr> read(ref<Expr> offset, Expr::Width width) const;
+  ref<Expr> readConcrete(ref<Expr> offset, Expr::Width width) const;
   ref<Expr> read(unsigned offset, Expr::Width width) const;
+  ref<Expr> readConcrete(unsigned offset, Expr::Width width) const;
   ref<Expr> read8(unsigned offset) const;
+  ref<Expr> read8Concrete(unsigned offset) const;
 
   // return bytes written.
-  void write(unsigned offset, ref<Expr> value);
-  void write(ref<Expr> offset, ref<Expr> value);
+  void write(unsigned offset, ref<Expr> value, ref<Expr> concrete_value = 0);
+  void write(ref<Expr> offset, ref<Expr> value, ref<Expr> concrete_value = 0);
 
   void write8(unsigned offset, uint8_t value);
   void write16(unsigned offset, uint16_t value);
@@ -215,7 +219,7 @@ private:
   void makeSymbolic();
 
   ref<Expr> read8(ref<Expr> offset) const;
-  void write8(unsigned offset, ref<Expr> value);
+  void write8(unsigned offset, ref<Expr> value, ref<Expr> concrete_value);
   void write8(ref<Expr> offset, ref<Expr> value);
 
   void fastRangeCheckOffset(ref<Expr> offset, unsigned *base_r, 

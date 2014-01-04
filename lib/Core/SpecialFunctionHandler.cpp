@@ -394,9 +394,10 @@ void SpecialFunctionHandler::handleIsSymbolic(ExecutionState &state,
                                 std::vector<ref<Expr> > &arguments) {
   assert(arguments.size()==1 && "invalid number of arguments to klee_is_symbolic");
 
-  executor.bindLocal(target, state, 
-                     ConstantExpr::create(!isa<ConstantExpr>(arguments[0]),
-                                          Expr::Int32));
+  executor.bindLocal(target, state,
+      ConstantExpr::create(!isa<ConstantExpr>(arguments[0]), Expr::Int32));
+  executor.bindLocalConcrete(target, state,
+      ConstantExpr::create(!isa<ConstantExpr>(arguments[0]), Expr::Int32));
 }
 
 void SpecialFunctionHandler::handlePreferCex(ExecutionState &state,
@@ -511,8 +512,10 @@ void SpecialFunctionHandler::handleGetObjSize(ExecutionState &state,
   executor.resolveExact(state, arguments[0], rl, "klee_get_obj_size");
   for (Executor::ExactResolutionList::iterator it = rl.begin(), 
          ie = rl.end(); it != ie; ++it) {
-    executor.bindLocal(target, *it->second, 
-                       ConstantExpr::create(it->first.first->size, Expr::Int32));
+    executor.bindLocal(target, *it->second,
+        ConstantExpr::create(it->first.first->size, Expr::Int32));
+    executor.bindLocalConcrete(target, *it->second,
+        ConstantExpr::create(it->first.first->size, Expr::Int32));
   }
 }
 
@@ -523,7 +526,9 @@ void SpecialFunctionHandler::handleGetErrno(ExecutionState &state,
   assert(arguments.size()==0 &&
          "invalid number of arguments to klee_get_errno");
   executor.bindLocal(target, state,
-                     ConstantExpr::create(errno, Expr::Int32));
+      ConstantExpr::create(errno, Expr::Int32));
+  executor.bindLocalConcrete(target, state,
+      ConstantExpr::create(errno, Expr::Int32));
 }
 
 void SpecialFunctionHandler::handleCalloc(ExecutionState &state,

@@ -17,6 +17,7 @@ namespace klee {
 
   struct Cell {
     ref<Expr> value;
+    ref<Expr> concrete_value;
   };
 }
 
