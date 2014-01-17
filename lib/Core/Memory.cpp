@@ -619,9 +619,14 @@ void ObjectState::write(unsigned offset, ref<Expr> value,
   assert(w == NumBytes * 8 && "Invalid write size!");
   for (unsigned i = 0; i != NumBytes; ++i) {
     unsigned idx = Context::get().isLittleEndian() ? i : (NumBytes - i - 1);
-    assert(!concrete_value.isNull() && "concrete_value is null");
-    write8(offset + idx, ExtractExpr::create(value, 8 * i, Expr::Int8),
-           ExtractExpr::create(concrete_value, 8 * i, Expr::Int8));
+    if (concrete_value.isNull()) {
+      assert(isa<ConstantExpr>(value) && "concrete_value is null");
+      write8(offset + idx, ExtractExpr::create(value, 8 * i, Expr::Int8),
+             ExtractExpr::create(value, 8 * i, Expr::Int8));
+    } else {
+      write8(offset + idx, ExtractExpr::create(value, 8 * i, Expr::Int8),
+             ExtractExpr::create(concrete_value, 8 * i, Expr::Int8));
+    }
   }
 } 
 

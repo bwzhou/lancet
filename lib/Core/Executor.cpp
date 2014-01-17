@@ -767,6 +767,11 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
     }
   }
 
+  std::cerr << __FILE__ << ":" << __LINE__ << " state " << &current
+            << " fork condition:"
+            << std::endl
+            << condition
+            << std::endl;
   double timeout = coreSolverTimeout;
   if (isSeeding)
     timeout *= it->second.size();
