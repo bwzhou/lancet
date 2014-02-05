@@ -3599,6 +3599,25 @@ void Executor::executeMemoryOperation(ExecutionState &state,
   }
 }
 
+static void mutateConcrete(uint8_t *store, unsigned size) {
+  std::cerr << "BEGIN " << __func__ << std::endl;
+  std::cerr << "Original: ";
+  for (unsigned i = 0; i < size; ++i) {
+    std::cerr << store[i] << " ";
+  }
+  std::cerr << std::endl;
+
+  unsigned bit = theRNG.getInt32() % (8 * size); // 8 is the size of uint8_t;
+  store[bit / 8] ^= (1 << bit % 8);
+
+  std::cerr << "Flipped bit " << bit << ": ";
+  for (unsigned i = 0; i < size; ++i) {
+    std::cerr << store[i] << " ";
+  }
+  std::cerr << std::endl;
+  std::cerr << "END " << __func__ << std::endl;
+}
+
 void Executor::executeMakeSymbolic(ExecutionState &state, 
                                    const MemoryObject *mo,
                                    const std::string &name) {
@@ -3614,6 +3633,18 @@ void Executor::executeMakeSymbolic(ExecutionState &state,
     const Array *array = new Array(uniqueName, mo->size);
     bindObjectInState(state, mo, false, array);
     state.addSymbolic(mo, array);
+
+    // Spawn more concrete values for the new symbolic
+    ExecutionState *second = new ExecutionState(state);
+    addedStates.insert(second);
+    state.ptreeNode->data = 0;
+    std::pair<PTree::Node*,PTree::Node*> res =
+      processTree->split(state.ptreeNode, second, &state);
+    second->ptreeNode = res.first;
+    state.ptreeNode = res.second; 
+    const ObjectState *os = second->addressSpace.findObject(mo);
+    mutateConcrete(os->concreteStore, mo->size);
+    // findNearestCommonDominator
     
     std::map< ExecutionState*, std::vector<SeedInfo> >::iterator it = 
       seedMap.find(&state);
