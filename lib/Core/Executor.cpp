@@ -91,6 +91,7 @@
 #include <sstream>
 #include <vector>
 #include <string>
+#include <utility>
 
 #include <sys/mman.h>
 
@@ -767,11 +768,13 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
     }
   }
 
-  std::cerr << __FILE__ << ":" << __LINE__ << " state " << &current
-            << " fork condition:"
-            << std::endl
-            << condition
-            << std::endl;
+  if (!dyn_cast<ConstantExpr>(condition)) {
+    std::cerr << __FILE__ << ":" << __LINE__ << " state " << &current
+              << " fork condition:"
+              << std::endl
+              << condition
+              << std::endl;
+  }
   double timeout = coreSolverTimeout;
   if (isSeeding)
     timeout *= it->second.size();
@@ -1463,6 +1466,27 @@ void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src,
     }
   }
 
+  while (!state.symbolic_branches.empty()) {
+    KInstruction *ki = state.symbolic_branches.top();
+    /*
+     * std::cerr << __FILE__ << ":" << __LINE__ << " state " << &state
+     *           << " check if " << dst
+     *           << " dominates " << ki->inst->getParent()
+     *           << std::endl;
+     */
+    std::pair<BasicBlock*, BasicBlock*> tmp = std::make_pair(dst, ki->inst->getParent());
+    if (kmodule->dom.find(tmp) == kmodule->dom.end() || !kmodule->dom[tmp]) {
+      break;
+    }
+
+    state.symbolic_branches.pop();
+
+    std::cerr << __FILE__ << ":" << __LINE__ << " state " << &state
+              << " bb " << dst->getName().str()
+              << " popped out a symbolic branch " << ki->inst
+              << std::endl;
+  }
+
   if (state.pc->inst->getOpcode() == Instruction::PHI) {
     PHINode *first = static_cast<PHINode*>(state.pc->inst);
     state.incomingBBIndex = first->getBasicBlockIndex(src);
@@ -1652,6 +1676,15 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       ref<Expr> cond = eval(ki, 0, state).value;
       ref<Expr> concrete_cond = eval(ki, 0, state).concrete_value;
       Executor::StatePair branches = fork(state, cond, false, concrete_cond);
+      
+      // fork returns two states means cond is symbolic
+      if (branches.first && branches.second) {
+        state.symbolic_branches.push(state.prevPC);
+        std::cerr << __FILE__ << ":" << __LINE__ << " state " << &state
+                  << " bb " << state.prevPC->inst->getParent()->getName().str()
+                  << " pushed in a symbolic branch " << state.prevPC->inst
+                  << std::endl;
+      }
 
       // NOTE: There is a hidden dependency here, markBranchVisited
       // requires that we still be in the context of the branch
@@ -3599,6 +3632,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
   }
 }
 
+/*
 static void mutateConcrete(uint8_t *store, unsigned size) {
   std::cerr << "BEGIN " << __func__ << std::endl;
   std::cerr << "Original: ";
@@ -3617,6 +3651,7 @@ static void mutateConcrete(uint8_t *store, unsigned size) {
   std::cerr << std::endl;
   std::cerr << "END " << __func__ << std::endl;
 }
+*/
 
 void Executor::executeMakeSymbolic(ExecutionState &state, 
                                    const MemoryObject *mo,
@@ -3634,6 +3669,7 @@ void Executor::executeMakeSymbolic(ExecutionState &state,
     bindObjectInState(state, mo, false, array);
     state.addSymbolic(mo, array);
 
+    /*
     // Spawn more concrete values for the new symbolic
     ExecutionState *second = new ExecutionState(state);
     addedStates.insert(second);
@@ -3645,6 +3681,7 @@ void Executor::executeMakeSymbolic(ExecutionState &state,
     const ObjectState *os = second->addressSpace.findObject(mo);
     mutateConcrete(os->concreteStore, mo->size);
     // findNearestCommonDominator
+    */
     
     std::map< ExecutionState*, std::vector<SeedInfo> >::iterator it = 
       seedMap.find(&state);

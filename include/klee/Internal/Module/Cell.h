@@ -10,7 +10,9 @@
 #ifndef KLEE_CELL_H
 #define KLEE_CELL_H
 
+#include <stack>
 #include <klee/Expr.h>
+#include "klee/Internal/Module/KInstIterator.h"
 
 namespace klee {
   class MemoryObject;
@@ -18,6 +20,7 @@ namespace klee {
   struct Cell {
     ref<Expr> value;
     ref<Expr> concrete_value;
+    std::stack<KInstIterator> symbolic_branches;
   };
 }
 

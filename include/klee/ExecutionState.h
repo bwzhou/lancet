@@ -21,6 +21,7 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <stack>
 
 namespace llvm {
   class Loop;
@@ -114,6 +115,9 @@ public:
 
   llvm::Loop* loopBB;
   unsigned loopTotalCount;
+
+  std::stack<KInstIterator> symbolic_branches;
+
   std::string getFnAlias(std::string fn);
   void addFnAlias(std::string old_fn, std::string new_fn);
   void removeFnAlias(std::string fn);

@@ -14,6 +14,7 @@
 #include "klee/Interpreter.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/Dominators.h"
+#include "llvm/Analysis/PostDominators.h"
 
 #include <map>
 #include <set>
@@ -104,6 +105,7 @@ namespace klee {
     std::map<llvm::Function*, llvm::DominatorTreeBase<llvm::BasicBlock>*> dominatorTreeBaseMap;
     std::vector<llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>*> loopInfoBases;
     std::map<llvm::Function*, llvm::LoopInfoBase<llvm::BasicBlock, llvm::Loop>*> loopInfoBaseMap;
+    std::map<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>, bool> dom;
 
     // Functions which escape (may be called indirectly)
     // XXX change to KFunction

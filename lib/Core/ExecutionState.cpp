@@ -129,7 +129,8 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     shadowObjects(state.shadowObjects),
     incomingBBIndex(state.incomingBBIndex),
     loopBB(state.loopBB),
-    loopTotalCount(state.loopTotalCount)
+    loopTotalCount(state.loopTotalCount),
+    symbolic_branches(state.symbolic_branches)
 {
   for (unsigned int i=0; i<symbolics.size(); i++)
     symbolics[i].first->refCount++;

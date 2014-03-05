@@ -12,6 +12,7 @@
 
 #include "klee/Config/Version.h"
 
+#include "llvm/Analysis/PostDominators.h"
 #if LLVM_VERSION_CODE >= LLVM_VERSION(3, 3)
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
@@ -23,6 +24,8 @@
 #endif
 #include "llvm/Pass.h"
 #include "llvm/CodeGen/IntrinsicLowering.h"
+#include <map>
+#include <utility>
 
 namespace llvm {
   class Function;
@@ -177,6 +180,17 @@ private:
                      llvm::BasicBlock *defaultBlock);
 };
 
+class InitDomTrees : public llvm::ModulePass {
+public:
+  typedef std::map<std::pair<llvm::BasicBlock*, llvm::BasicBlock*>, bool> DomMap;
+  InitDomTrees(DomMap *D): ModulePass(ID), dom(D) {}
+  void populate(llvm::PostDominatorTree*, llvm::Function*);
+  virtual bool runOnModule(llvm::Module &M);
+  virtual void getAnalysisUsage(llvm::AnalysisUsage &AU) const;
+private:
+  static char ID;
+  DomMap *dom;
+};
 }
 
 #endif
