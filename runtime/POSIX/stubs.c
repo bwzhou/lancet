@@ -33,9 +33,19 @@ void klee_warning_once(const char*);
 
 /* Silent ignore */
 
+int __syscall_sigaction(int signum, const struct sigaction *act,
+                        struct sigaction *oldact)
+    __attribute__((weak));
+
+int __syscall_sigaction(int signum, const struct sigaction *act,
+                           struct sigaction *oldact) {
+  klee_warning_once("silently ignoring");
+  return 0;
+}
+
 int __syscall_rt_sigaction(int signum, const struct sigaction *act,
                            struct sigaction *oldact, size_t _something)
-     __attribute__((weak));
+    __attribute__((weak));
 
 int __syscall_rt_sigaction(int signum, const struct sigaction *act,
                            struct sigaction *oldact, size_t _something) {
@@ -113,12 +123,14 @@ int mknod(const char *pathname, mode_t mode, dev_t dev) {
   return -1;
 }
 
+/*
 int pipe(int filedes[2]) __attribute__((weak));
 int pipe(int filedes[2]) {
   klee_warning("ignoring (ENFILE)");
   errno = ENFILE;
   return -1;
 }
+*/
 
 int link(const char *oldpath, const char *newpath) __attribute__((weak));
 int link(const char *oldpath, const char *newpath) {
@@ -461,6 +473,7 @@ int setresuid(uid_t ruid, uid_t euid, uid_t suid) {
   return -1;
 }
 
+/*
 int setrlimit(__rlimit_resource_t resource, const struct rlimit *rlim) __attribute__((weak));
 int setrlimit(__rlimit_resource_t resource, const struct rlimit *rlim) {
   klee_warning("ignoring (EPERM)");
@@ -474,6 +487,7 @@ int setrlimit64(__rlimit_resource_t resource, const struct rlimit64 *rlim) {
   errno = EPERM;
   return -1;
 }
+*/
 
 pid_t setsid(void) __attribute__((weak));
 pid_t setsid(void) {

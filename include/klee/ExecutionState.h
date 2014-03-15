@@ -118,6 +118,9 @@ public:
 
   std::stack<KInstIterator> symbolic_branches;
 
+  ExecutionState *parent;
+  std::vector<ExecutionState*> threads;
+
   std::string getFnAlias(std::string fn);
   void addFnAlias(std::string old_fn, std::string new_fn);
   void removeFnAlias(std::string fn);

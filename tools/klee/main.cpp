@@ -562,7 +562,7 @@ void KleeHandler::processTestCase(const ExecutionState &state,
                      << "\n";
 
         std::stringstream loopSuffix;
-        loopSuffix << "looptotal." << (void *) &state << "." << state.loopTotalCount;
+        loopSuffix << "looptotal." << &state << "." << state.loopTotalCount;
         std::ostream *f = openTestFile(loopSuffix.str().c_str(), id);
         *f << "Roller terminated\n";
         delete f;

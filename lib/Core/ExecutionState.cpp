@@ -78,8 +78,11 @@ ExecutionState::ExecutionState(KFunction *kf)
     forkDisabled(false),
     ptreeNode(0),
     loopBB(0),
-    loopTotalCount(0) {
+    loopTotalCount(0),
+    parent(this)
+{
   pushFrame(0, kf);
+  threads.push_back(this);
 }
 
 ExecutionState::ExecutionState(const std::vector<ref<Expr> > &assumptions) 
@@ -89,7 +92,10 @@ ExecutionState::ExecutionState(const std::vector<ref<Expr> > &assumptions)
     queryCost(0.),
     ptreeNode(0),
     loopBB(0),
-    loopTotalCount(0) {
+    loopTotalCount(0),
+    parent(this)
+{
+  threads.push_back(this);
 }
 
 ExecutionState::~ExecutionState() {
@@ -130,10 +136,18 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     incomingBBIndex(state.incomingBBIndex),
     loopBB(state.loopBB),
     loopTotalCount(state.loopTotalCount),
-    symbolic_branches(state.symbolic_branches)
+    symbolic_branches(state.symbolic_branches),
+    parent(this) /* threads need special treatment when forking a path */
 {
   for (unsigned int i=0; i<symbolics.size(); i++)
     symbolics[i].first->refCount++;
+
+  threads.push_back(this);
+  if (state.parent == &state) {
+    for (int i = 1; i < state.threads.size(); ++i) {
+      threads.push_back(new ExecutionState(*state.threads[i]));
+    }
+  }
 }
 
 ExecutionState *ExecutionState::branch() {

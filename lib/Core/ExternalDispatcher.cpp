@@ -127,7 +127,7 @@ bool ExternalDispatcher::executeCall(Function *f, Instruction *i, uint64_t *args
   if (it == dispatchers.end()) {
 #ifdef WINDOWS
     std::map<std::string, void*>::iterator it2 = 
-      preboundFunctions.find(f->getName()));
+      preboundFunctions.find(f->getName());
 
     if (it2 != preboundFunctions.end()) {
       // only bind once
@@ -163,8 +163,10 @@ bool ExternalDispatcher::runProtectedCall(Function *f, uint64_t *args) {
   struct sigaction segvAction, segvActionOld;
   bool res;
   
-  if (!f)
+  if (!f) {
+    llvm::errs() << "Invalid external function\n";
     return false;
+  }
 
   std::vector<GenericValue> gvArgs;
   gTheArgsP = args;
@@ -176,6 +178,7 @@ bool ExternalDispatcher::runProtectedCall(Function *f, uint64_t *args) {
   sigaction(SIGSEGV, &segvAction, &segvActionOld);
 
   if (setjmp(escapeCallJmpBuf)) {
+    llvm::errs() << "SEGV happened in external call\n";
     res = false;
   } else {
     executionEngine->runFunction(f, gvArgs);

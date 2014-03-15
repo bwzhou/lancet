@@ -305,6 +305,7 @@ void AddressSpace::copyOutConcretes() {
 }
 
 bool AddressSpace::copyInConcretes() {
+  bool readonly = true;
   for (MemoryMap::iterator it = objects.begin(), ie = objects.end(); 
        it != ie; ++it) {
     const MemoryObject *mo = it->first;
@@ -319,12 +320,13 @@ bool AddressSpace::copyInConcretes() {
         } else {
           ObjectState *wos = getWriteable(mo, os);
           memcpy(wos->concreteStore, address, mo->size);
+          readonly = false;
         }
       }
     }
   }
 
-  return true;
+  return readonly;
 }
 
 /***/

@@ -1257,6 +1257,7 @@ void Executor::executeCall(ExecutionState &state,
                            Function *f,
                            std::vector< ref<Expr> > &arguments,
                            std::vector< ref<Expr> > &concrete_arguments) {
+  llvm::errs() << "calling function " << f->getName() << "\n";
   Instruction *i = ki->inst;
   if (f && f->isDeclaration()) {
     switch(f->getIntrinsicID()) {
@@ -1562,13 +1563,16 @@ static inline const llvm::fltSemantics * fpWidthToSemantics(unsigned width) {
 }
 
 void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
-  if (executedInstructionCount++ % 1000000 == 0) {
-    llvm::errs() << __FILE__ << ":" << __LINE__
-              << " current time in second " << util::getWallTime()
-              << "\n";
-  }
+  /*
+   * if (executedInstructionCount++ % 1000000 == 0) {
+   *   llvm::errs() << __FILE__ << ":" << __LINE__ << " current time in second "
+   *                << util::getWallTime() << "\n";
+   * }
+   */
   Instruction *i = ki->inst;
-  //i->dump();
+  /*
+   * i->dump(); // use -debug-print-instructions to print instructions during execution
+   */
   switch (i->getOpcode()) {
     // Control flow
   case Instruction::Ret: {
@@ -1838,9 +1842,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 #if LLVM_VERSION_CODE >= LLVM_VERSION(3, 3)
               bool isSExt = cs.paramHasAttr(i+1, llvm::Attribute::SExt);
 #elif LLVM_VERSION_CODE >= LLVM_VERSION(3, 2)
-	      bool isSExt = cs.paramHasAttr(i+1, llvm::Attributes::SExt);
+              bool isSExt = cs.paramHasAttr(i+1, llvm::Attributes::SExt);
 #else
-	      bool isSExt = cs.paramHasAttr(i+1, llvm::Attribute::SExt);
+              bool isSExt = cs.paramHasAttr(i+1, llvm::Attribute::SExt);
 #endif
               if (isSExt) {
                 arguments[i] = SExtExpr::create(arguments[i], to);
@@ -2925,11 +2929,12 @@ void Executor::run(ExecutionState &initialState) {
   searcher->update(0, states, std::set<ExecutionState*>());
 
   while (!states.empty() && !haltExecution) {
-    ExecutionState &state = searcher->selectState();
+    ExecutionState &state = searcher->selectState(); // Let the executor know about the threads
+
     KInstruction *ki = state.pc;
     stepInstruction(state);
-
     executeInstruction(state, ki);
+
     processTimers(&state, MaxInstructionTime);
 
     if (MaxMemory) {
@@ -3194,7 +3199,7 @@ void Executor::callExternalFunction(ExecutionState &state,
   // check if specialFunctionHandler wants it
   if (specialFunctionHandler->handle(state, function, target, arguments))
     return;
-  
+
   if (NoExternals && !okExternals.count(function->getName())) {
     std::cerr << "KLEE:ERROR: Calling not-OK external function : " 
               << function->getName().str() << "\n";
@@ -3233,35 +3238,68 @@ void Executor::callExternalFunction(ExecutionState &state,
     }
   }
 
-  state.addressSpace.copyOutConcretes();
+  if (function->getName().startswith("pthread")) {
 
-  if (!SuppressExternalWarnings) {
-    std::ostringstream os;
-    os << "calling external: " << function->getName().str() << "(";
-    for (unsigned i=0; i<arguments.size(); i++) {
-      os << arguments[i];
-      if (i != arguments.size()-1)
-	os << ", ";
+    /*
+     * int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+     *                    void *(*start_routine) (void *), void *arg);
+     */
+    if (function->getName().equals("pthread_create")) {
+      Value *fp = CallSite(target->inst).getArgument(2);
+      Function *f = getTargetFunction(fp, state);
+      if (f) {
+        llvm::errs() << "created a thread at function " << f->getName() << "\n";
+
+        KFunction *kf = kmodule->functionMap[f];
+        ExecutionState *child = new ExecutionState(kf); // child->parent == child
+        child->parent = state.parent;
+        state.parent->threads.push_back(child);
+        bindArgument(kf, 0, *child, arguments[3]);
+        bindArgumentConcrete(kf, 0, *child, arguments[3]);
+      }
+    } else {
+      klee_warning("%s is skipped", function->getName().str().c_str());
     }
-    os << ")";
-    
-    if (AllExternalWarnings)
-      klee_warning("%s", os.str().c_str());
-    else
-      klee_warning_once(function, "%s", os.str().c_str());
-  }
-  
-  bool success = externalDispatcher->executeCall(function, target->inst, args);
-  if (!success) {
-    terminateStateOnError(state, "failed external call: " + function->getName(),
-                          "external.err");
-    return;
-  }
 
-  if (!state.addressSpace.copyInConcretes()) {
-    terminateStateOnError(state, "external modified read-only object",
-                          "external.err");
-    return;
+  } else { 
+  
+    state.addressSpace.copyOutConcretes();
+
+    if (!SuppressExternalWarnings) {
+      std::ostringstream os;
+      os << "calling external: " << function->getName().str() << "(";
+      for (unsigned i=0; i<arguments.size(); i++) {
+        os << arguments[i];
+        if (i != arguments.size()-1) os << ", ";
+      }
+      os << ")";
+      
+      if (AllExternalWarnings)
+        klee_warning("%s", os.str().c_str());
+      else
+        klee_warning_once(function, "%s", os.str().c_str());
+    }
+    
+    bool success = externalDispatcher->executeCall(function, target->inst, args);
+    if (!success) {
+      terminateStateOnError(state, "failed external call: " + function->getName(),
+                            "external.err");
+      return;
+    }
+
+    /*
+     * if (!state.addressSpace.copyInConcretes()) {
+     *   terminateStateOnError(state, "external modified read-only object",
+     *                         "external.err");
+     *   return;
+     * }
+     */
+    if (!state.addressSpace.copyInConcretes()) {
+      llvm::errs() << "profile " << function->getName() << " modifies memory\n";
+    } else {
+      llvm::errs() << "profile " << function->getName() << " is readonly\n";
+    }
+
   }
 
   LLVM_TYPE_Q Type *resultType = target->inst->getType();
