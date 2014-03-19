@@ -1242,7 +1242,7 @@ void Executor::stepInstruction(ExecutionState &state) {
   }
 
   if (statsTracker)
-    statsTracker->stepInstruction(state);
+    statsTracker->stepInstruction(*state.parent);
 
   ++stats::instructions;
   state.prevPC = state.pc;
@@ -1257,7 +1257,8 @@ void Executor::executeCall(ExecutionState &state,
                            Function *f,
                            std::vector< ref<Expr> > &arguments,
                            std::vector< ref<Expr> > &concrete_arguments) {
-  llvm::errs() << "calling function " << f->getName() << "\n";
+  llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << &state
+               << " calling function " << f->getName() << "\n";
   Instruction *i = ki->inst;
   if (f && f->isDeclaration()) {
     switch(f->getIntrinsicID()) {
@@ -3248,14 +3249,15 @@ void Executor::callExternalFunction(ExecutionState &state,
       Value *fp = CallSite(target->inst).getArgument(2);
       Function *f = getTargetFunction(fp, state);
       if (f) {
-        llvm::errs() << "created a thread at function " << f->getName() << "\n";
-
         KFunction *kf = kmodule->functionMap[f];
         ExecutionState *child = new ExecutionState(kf); // child->parent == child
         child->parent = state.parent;
         state.parent->threads.push_back(child);
+        addedStates.insert(child);
         bindArgument(kf, 0, *child, arguments[3]);
         bindArgumentConcrete(kf, 0, *child, arguments[3]);
+
+        llvm::errs() << "created a thread " << child << " at function " << f->getName() << "\n";
       }
     } else {
       klee_warning("%s is skipped", function->getName().str().c_str());
@@ -3548,24 +3550,26 @@ void Executor::executeMemoryOperation(ExecutionState &state,
                                       ref<Expr> value /* undef if read */,
                                       ref<Expr> concrete_value /* undef if read */,
                                       KInstruction *target /* undef if write */) {
+  ExecutionState &parent = *state.parent;
+
   Expr::Width type = (isWrite ? value->getWidth() : 
                      getWidthForLLVMType(target->inst->getType()));
   unsigned bytes = Expr::getMinBytesForWidth(type);
 
   if (SimplifySymIndices) {
     if (!isa<ConstantExpr>(address))
-      address = state.constraints.simplifyExpr(address);
+      address = parent.constraints.simplifyExpr(address);
     if (isWrite && !isa<ConstantExpr>(value))
-      value = state.constraints.simplifyExpr(value);
+      value = parent.constraints.simplifyExpr(value);
   }
 
   // fast path: single in-bounds resolution
   ObjectPair op;
   bool success;
   solver->setTimeout(coreSolverTimeout);
-  if (!state.addressSpace.resolveOne(state, solver, address, op, success)) {
-    address = toConstant(state, address, "resolveOne failure");
-    success = state.addressSpace.resolveOne(cast<ConstantExpr>(address), op);
+  if (!parent.addressSpace.resolveOne(parent, solver, address, op, success)) {
+    address = toConstant(parent, address, "resolveOne failure");
+    success = parent.addressSpace.resolveOne(cast<ConstantExpr>(address), op);
   }
   solver->setTimeout(0);
 
@@ -3573,14 +3577,14 @@ void Executor::executeMemoryOperation(ExecutionState &state,
     const MemoryObject *mo = op.first;
 
     if (MaxSymArraySize && mo->size>=MaxSymArraySize) {
-      address = toConstant(state, address, "max-sym-array-size");
+      address = toConstant(parent, address, "max-sym-array-size");
     }
     
     ref<Expr> offset = mo->getOffsetExpr(address);
 
     bool inBounds;
     solver->setTimeout(coreSolverTimeout);
-    bool success = solver->mustBeTrue(state, 
+    bool success = solver->mustBeTrue(parent, 
                                       mo->getBoundsCheckOffset(offset, bytes),
                                       inBounds);
     solver->setTimeout(0);
@@ -3598,13 +3602,13 @@ void Executor::executeMemoryOperation(ExecutionState &state,
                                 "memory error: object read only",
                                 "readonly.err");
         } else {
-          ObjectState *wos = state.addressSpace.getWriteable(mo, os);
+          ObjectState *wos = parent.addressSpace.getWriteable(mo, os);
           wos->write(offset, value, concrete_value);
         }          
       } else {
         ref<Expr> result = os->read(offset, type);
         if (interpreterOpts.MakeConcreteSymbolic)
-          result = replaceReadWithSymbolic(state, result);
+          result = replaceReadWithSymbolic(parent, result);
         bindLocal(target, state, result);
         bindLocalConcrete(target, state, os->readConcrete(offset, type));
       }
@@ -3618,12 +3622,12 @@ void Executor::executeMemoryOperation(ExecutionState &state,
   
   ResolutionList rl;  
   solver->setTimeout(coreSolverTimeout);
-  bool incomplete = state.addressSpace.resolve(state, solver, address, rl,
+  bool incomplete = parent.addressSpace.resolve(parent, solver, address, rl,
                                                0, coreSolverTimeout);
   solver->setTimeout(0);
   
   // XXX there is some query wasteage here. who cares?
-  ExecutionState *unbound = &state;
+  ExecutionState *unbound = &parent;
   
   for (ResolutionList::iterator i = rl.begin(), ie = rl.end(); i != ie; ++i) {
     const MemoryObject *mo = i->first;
