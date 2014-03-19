@@ -1242,7 +1242,7 @@ void Executor::stepInstruction(ExecutionState &state) {
   }
 
   if (statsTracker)
-    statsTracker->stepInstruction(*state.parent);
+    statsTracker->stepInstruction(state);
 
   ++stats::instructions;
   state.prevPC = state.pc;
@@ -3251,6 +3251,13 @@ void Executor::callExternalFunction(ExecutionState &state,
       if (f) {
         KFunction *kf = kmodule->functionMap[f];
         ExecutionState *child = new ExecutionState(kf); // child->parent == child
+        /*
+         * statsTracker->stepInstruction relies on framePushed to work
+         * FIXME do we want to put 0 as the parent stack here?
+         */
+        if (statsTracker)
+          statsTracker->framePushed(*child, 0);
+
         child->parent = state.parent;
         state.parent->threads.push_back(child);
         addedStates.insert(child);
