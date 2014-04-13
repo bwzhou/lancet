@@ -79,9 +79,11 @@ ExecutionState::ExecutionState(KFunction *kf)
     ptreeNode(0),
     loopBB(0),
     loopTotalCount(0),
-    parent(this)
+    parent(this),
+    blocked(false)
 {
   pushFrame(0, kf);
+  threadId = 0;
   threads.push_back(this);
 }
 
@@ -93,24 +95,29 @@ ExecutionState::ExecutionState(const std::vector<ref<Expr> > &assumptions)
     ptreeNode(0),
     loopBB(0),
     loopTotalCount(0),
-    parent(this)
+    parent(this),
+    blocked(false)
 {
+  threadId = 0;
   threads.push_back(this);
 }
 
 ExecutionState::~ExecutionState() {
-  for (unsigned int i=0; i<symbolics.size(); i++)
-  {
-    const MemoryObject *mo = symbolics[i].first;
-    assert(mo->refCount > 0);
-    mo->refCount--;
-    if (mo->refCount == 0)
-      delete mo;
+  if (parent == this) {
+    for (unsigned int i=0; i<symbolics.size(); i++)
+    {
+      const MemoryObject *mo = symbolics[i].first;
+      assert(mo->refCount > 0);
+      mo->refCount--;
+      if (mo->refCount == 0)
+        delete mo;
+    }
   }
 
   while (!stack.empty()) popFrame();
 }
 
+// copy parent state
 ExecutionState::ExecutionState(const ExecutionState& state)
   : fnAliases(state.fnAliases),
     fakeState(state.fakeState),
@@ -137,30 +144,67 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     loopBB(state.loopBB),
     loopTotalCount(state.loopTotalCount),
     symbolic_branches(state.symbolic_branches),
-    parent(this) /* threads need special treatment when forking a path */
+    parent(this),
+    blocked(state.blocked),
+    waitQueues(state.waitQueues) /* clone state has the same keys for queues */
 {
+  assert(state.parent == &state); // should only be called by a parent thread
+  threadId = 0;
+  threads.push_back(this);
+  for (std::vector<ExecutionState*>::const_iterator t = state.threads.begin(),
+       e = state.threads.end(); t != e; ++t) {
+    threads.push_back(new ExecutionState(**t, this));
+  }
+
   for (unsigned int i=0; i<symbolics.size(); i++)
     symbolics[i].first->refCount++;
+}
 
+// copy thread state
+ExecutionState::ExecutionState(const ExecutionState& state, ExecutionState *p)
+  : //fnAliases(state.fnAliases),
+    //fakeState(state.fakeState),
+    //underConstrained(state.underConstrained),
+    //depth(state.depth),
+    pc(state.pc),
+    prevPC(state.prevPC),
+    stack(state.stack),
+    //constraints(state.constraints),
+    //queryCost(state.queryCost),
+    //weight(state.weight),
+    //addressSpace(state.addressSpace),
+    //pathOS(state.pathOS),
+    //symPathOS(state.symPathOS),
+    //instsSinceCovNew(state.instsSinceCovNew),
+    //coveredNew(state.coveredNew),
+    //forkDisabled(state.forkDisabled),
+    //coveredLines(state.coveredLines),
+    //ptreeNode(state.ptreeNode),
+    //symbolics(state.symbolics),
+    //arrayNames(state.arrayNames),
+    //shadowObjects(state.shadowObjects),
+    //incomingBBIndex(state.incomingBBIndex),
+    //loopBB(state.loopBB),
+    //loopTotalCount(state.loopTotalCount),
+    //symbolic_branches(state.symbolic_branches),
+    parent(p),
+    blocked(state.blocked)
+{
   threads.push_back(this);
-  if (state.parent == &state) {
-    for (int i = 1; i < state.threads.size(); ++i) {
-      threads.push_back(new ExecutionState(*state.threads[i]));
-    }
-  }
+  threadId = parent->threads.size();
 }
 
 ExecutionState *ExecutionState::branch() {
   depth++;
 
-  ExecutionState *falseState = new ExecutionState(*this);
+  ExecutionState *falseState = new ExecutionState(*this->parent);
   falseState->coveredNew = false;
   falseState->coveredLines.clear();
 
   weight *= .5;
   falseState->weight -= weight;
 
-  return falseState;
+  return falseState->threads[this->threadId];
 }
 
 void ExecutionState::pushFrame(KInstIterator caller, KFunction *kf) {

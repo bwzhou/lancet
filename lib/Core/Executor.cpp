@@ -900,7 +900,8 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
       falseState = trueState;
     } else {
       falseState = trueState->branch();
-      addedStates.insert(falseState);
+      addedStates.insert(falseState->parent->threads.begin(),
+          falseState->parent->threads.end());
       if (trueState->loopBB) {
         std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
                   << " roller state " << trueState
@@ -1030,9 +1031,9 @@ void Executor::addConstraint(ExecutionState &state, ref<Expr> condition) {
       klee_warning("seeds patched for violating constraint"); 
   }
 
-  state.addConstraint(condition);
+  state.parent->addConstraint(condition);
   if (ivcEnabled)
-    doImpliedValueConcretization(state, condition, 
+    doImpliedValueConcretization(*state.parent, condition, 
                                  ConstantExpr::alloc(1, Expr::Bool));
 }
 
@@ -3241,16 +3242,16 @@ void Executor::callExternalFunction(ExecutionState &state,
 
   if (function->getName().startswith("pthread")) {
 
+    if (function->getName().equals("pthread_create")) {
     /*
      * int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
      *                    void *(*start_routine) (void *), void *arg);
      */
-    if (function->getName().equals("pthread_create")) {
       Value *fp = CallSite(target->inst).getArgument(2);
       Function *f = getTargetFunction(fp, state);
       if (f) {
         KFunction *kf = kmodule->functionMap[f];
-        ExecutionState *child = new ExecutionState(kf); // child->parent == child
+        ExecutionState *child = new ExecutionState(kf);
         /*
          * statsTracker->stepInstruction relies on framePushed to work
          * FIXME do we want to put 0 as the parent stack here?
@@ -3264,13 +3265,50 @@ void Executor::callExternalFunction(ExecutionState &state,
         bindArgument(kf, 0, *child, arguments[3]);
         bindArgumentConcrete(kf, 0, *child, arguments[3]);
 
-        llvm::errs() << "created a thread " << child << " at function " << f->getName() << "\n";
+        // get the type of the first parameter
+        Type *pt = function->getFunctionType()->getParamType(0);
+        // get the type of the variable pointed by the first element
+        Type *t = dyn_cast<SequentialType>(pt)->getElementType();
+        // create a constant expression of the same size as pthread_t
+        ref<Expr> tid = ConstantExpr::create(
+            (uint64_t) child, getWidthForLLVMType(t));
+        // store thread ID in the address pointed by the first parameter
+        executeMemoryOperation(state, true, arguments[0], tid, tid, 0);
+
+        llvm::errs() << "created a thread " << child << " to run "
+                     << f->getName() << "\n";
+      }
+    } else if (function->getName().equals("pthread_join")) {
+    /*
+     * int pthread_join(pthread_t thread, void **retval);
+     */
+      if (ConstantExpr *tid = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t key = tid->getZExtValue();
+        state.parent->waitQueues[key].push_back(state.threadId);
+        state.blocked = true;
+      } else {
+        llvm::errs() << "Non-constant pthread ID called by pthread_join\n";
+      }
+    } else if (function->getName().equals("pthread_exit")) {
+    /*
+     * void pthread_exit(void *retval);
+     */
+      uint64_t key = (uint64_t) &state;
+      if (state.parent->waitQueues.find(key) !=
+          state.parent->waitQueues.end()) {
+        std::vector<int> &Q = state.parent->waitQueues[key];
+        for (std::vector<int>::iterator it = Q.begin(), ie = Q.end();
+             it != ie; ++it) {
+          state.parent->threads[*it]->blocked = false;
+        }
+        Q.clear();
+        state.parent->waitQueues.erase(key);
       }
     } else {
       klee_warning("%s is skipped", function->getName().str().c_str());
     }
 
-  } else { 
+  } else {
   
     state.addressSpace.copyOutConcretes();
 
