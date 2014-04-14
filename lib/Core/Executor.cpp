@@ -3300,6 +3300,7 @@ void Executor::callExternalFunction(ExecutionState &state,
         for (std::vector<int>::iterator it = Q.begin(), ie = Q.end();
              it != ie; ++it) {
           state.parent->threads[*it]->blocked = false;
+          state.unblockedThreads.push_back(*it);
         }
         Q.clear();
         state.parent->waitQueues.erase(key);

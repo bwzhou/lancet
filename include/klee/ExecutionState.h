@@ -123,6 +123,7 @@ public:
   int threadId;
   bool blocked; // thread can wait on a single resource at a time
   std::map<uint64_t, std::vector<int> > waitQueues; // a wait queue for each synchronization address
+  std::vector<int> unblockedThreads;
 
   std::string getFnAlias(std::string fn);
   void addFnAlias(std::string old_fn, std::string new_fn);

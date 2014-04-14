@@ -344,6 +344,25 @@ namespace klee {
   private:
     bool isExternalCall(ExecutionState *current);
   };
+
+  class ThreadSearcher : public Searcher {
+    Searcher *baseSearcher;
+    std::set<ExecutionState*> blockedStates;
+
+  public:
+    ThreadSearcher(Searcher *baseSearcher);
+    ~ThreadSearcher();
+    ExecutionState &selectState();
+    void update(ExecutionState *current,
+                const std::set<ExecutionState*> &addedStates,
+                const std::set<ExecutionState*> &removedStates);
+    bool empty() { return baseSearcher->empty() && blockedStates.empty(); }
+    void printName(std::ostream &os) {
+      os << "<ThreadSearcher> baseSearcher:\n";
+      baseSearcher->printName(os);
+      os << "</ThreadSearcher>\n";
+    }
+  };
 }
 
 #endif

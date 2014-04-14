@@ -67,7 +67,11 @@ namespace {
 
   cl::opt<bool>
   UseDelayedExternalCallSearch("delay-external-call",
-      cl::desc("Delay states which is about to call an external function, such as calloc, to reduce our footprint in memory"));
+      cl::desc("Delay external function calls to reduce memory footprint"));
+
+  cl::opt<bool>
+  UseThreadSearch("use-thread-search",
+      cl::desc("Enable thread synchronization"));
 }
 
 
@@ -141,6 +145,10 @@ Searcher *klee::constructUserSearcher(Executor &executor) {
 
   if (UseDelayedExternalCallSearch) {
     searcher = new DelayedExternalCallSearcher(executor, searcher);
+  }
+
+  if (UseThreadSearch) {
+    searcher = new ThreadSearcher(searcher);
   }
 
   std::ostream &os = executor.getHandler().getInfoStream();

@@ -803,3 +803,40 @@ void DelayedExternalCallSearcher::update(
     delayedStates.erase(it);
   }
 }
+
+ThreadSearcher::ThreadSearcher(Searcher *_baseSearcher)
+  : baseSearcher(_baseSearcher) {
+}
+
+ThreadSearcher::~ThreadSearcher() {
+  delete baseSearcher;
+}
+
+ExecutionState &ThreadSearcher::selectState() {
+  return baseSearcher->selectState();
+}
+
+void ThreadSearcher::update(ExecutionState *current,
+                            const std::set<ExecutionState*> &addedStates,
+                            const std::set<ExecutionState*> &removedStates) {
+  if (current->blocked) {
+    blockedStates.insert(current);
+    baseSearcher->removeState(current);
+  }
+
+  std::set<ExecutionState*> unblockedStates;
+  for (std::vector<int>::iterator it = current->unblockedThreads.begin(),
+       ie = current->unblockedThreads.end(); it != ie; ++it) {
+    ExecutionState *s = current->parent->threads[*it];
+    if (blockedStates.find(s) != blockedStates.end()) {
+      unblockedStates.insert(s);
+      blockedStates.erase(s);
+    }
+  }
+  current->unblockedThreads.clear();
+  if (!unblockedStates.empty()) {
+    baseSearcher->update(0, unblockedStates, std::set<ExecutionState*>());
+  }
+
+  baseSearcher->update(current, addedStates, removedStates);
+}
