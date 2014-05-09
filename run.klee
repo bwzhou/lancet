@@ -12,6 +12,6 @@ shift
 ARG=$@
 #CMD="time Release+Asserts/bin/klee -use-concrete-explorer -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
 #CMD="time Debug+Asserts/bin/klee -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
-CMD="time Debug+Asserts/bin/klee -libc=uclibc -posix-runtime -load=/home/bwzhou/klee/lancet/examples/libevent/lib/libevent.so $BC $ARG 2>$LOG"
+CMD="time Debug+Asserts/bin/klee -use-thread-search -libc=uclibc -posix-runtime -load=/home/bwzhou/klee/lancet/examples/libevent/lib/libevent.so $BC $ARG 2>$LOG"
 echo $CMD
 eval $CMD

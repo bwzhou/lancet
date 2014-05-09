@@ -819,24 +819,42 @@ ExecutionState &ThreadSearcher::selectState() {
 void ThreadSearcher::update(ExecutionState *current,
                             const std::set<ExecutionState*> &addedStates,
                             const std::set<ExecutionState*> &removedStates) {
-  if (current->blocked) {
-    blockedStates.insert(current);
-    baseSearcher->removeState(current);
+  if (!removedStates.empty()) {
+    std::set<ExecutionState *> alt = removedStates;
+    for (std::set<ExecutionState*>::const_iterator it = removedStates.begin(),
+           ie = removedStates.end(); it != ie; ++it) {
+      ExecutionState *es = *it;
+      std::set<ExecutionState*>::const_iterator it2 = blockedStates.find(es);
+      if (it2 != blockedStates.end()) {
+        blockedStates.erase(it);
+        alt.erase(alt.find(es));
+      }
+    }
+    baseSearcher->update(current, addedStates, alt);
+  } else {
+    baseSearcher->update(current, addedStates, removedStates);
   }
 
-  std::set<ExecutionState*> unblockedStates;
-  for (std::vector<int>::iterator it = current->unblockedThreads.begin(),
-       ie = current->unblockedThreads.end(); it != ie; ++it) {
-    ExecutionState *s = current->parent->threads[*it];
-    if (blockedStates.find(s) != blockedStates.end()) {
-      unblockedStates.insert(s);
-      blockedStates.erase(s);
+  if (current) {
+    if (current->blocked) {
+      blockedStates.insert(current);
+      baseSearcher->removeState(current);
+    }
+
+    std::set<ExecutionState*> unblockedStates;
+    for (std::vector<int>::iterator it = current->unblockedThreads.begin(),
+         ie = current->unblockedThreads.end(); it != ie; ++it) {
+      ExecutionState *s = current->parent->threads[*it];
+      if (s && blockedStates.find(s) != blockedStates.end()) {
+        assert(s->blocked);
+        s->blocked = false;
+        unblockedStates.insert(s);
+        blockedStates.erase(s);
+      }
+    }
+    current->unblockedThreads.clear();
+    if (!unblockedStates.empty()) {
+      baseSearcher->update(0, unblockedStates, std::set<ExecutionState*>());
     }
   }
-  current->unblockedThreads.clear();
-  if (!unblockedStates.empty()) {
-    baseSearcher->update(0, unblockedStates, std::set<ExecutionState*>());
-  }
-
-  baseSearcher->update(current, addedStates, removedStates);
 }

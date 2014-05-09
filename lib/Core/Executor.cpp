@@ -2784,7 +2784,8 @@ void Executor::updateStates(ExecutionState *current) {
       seedMap.find(es);
     if (it3 != seedMap.end())
       seedMap.erase(it3);
-    processTree->remove(es->ptreeNode);
+    if (es->ptreeNode)
+      processTree->remove(es->ptreeNode);
     delete es;
   }
   removedStates.clear();
@@ -3060,6 +3061,9 @@ void Executor::terminateState(ExecutionState &state) {
 
   interpreterHandler->incPathsExplored();
 
+  // Remove myself from parent
+  state.parent->threads[state.threadId] = NULL;
+
   std::set<ExecutionState*>::iterator it = addedStates.find(&state);
   if (it==addedStates.end()) {
     state.pc = state.prevPC;
@@ -3072,7 +3076,8 @@ void Executor::terminateState(ExecutionState &state) {
     if (it3 != seedMap.end())
       seedMap.erase(it3);
     addedStates.erase(it);
-    processTree->remove(state.ptreeNode);
+    if (state.ptreeNode)
+      processTree->remove(state.ptreeNode);
     delete &state;
   }
 }
@@ -3260,6 +3265,7 @@ void Executor::callExternalFunction(ExecutionState &state,
           statsTracker->framePushed(*child, 0);
 
         child->parent = state.parent;
+        child->threadId = state.parent->threads.size();
         state.parent->threads.push_back(child);
         addedStates.insert(child);
         bindArgument(kf, 0, *child, arguments[3]);
@@ -3414,7 +3420,8 @@ void Executor::executeAlloc(ExecutionState &state,
                             KInstruction *target,
                             bool zeroMemory,
                             const ObjectState *reallocFrom) {
-  size = toUnique(state, size);
+  ExecutionState &parent = *state.parent;
+  size = toUnique(parent, size);
   if (ConstantExpr *CE = dyn_cast<ConstantExpr>(size)) {
     MemoryObject *mo = memory->allocate(CE->getZExtValue(), isLocal, false, 
                                         state.prevPC->inst);
@@ -3424,7 +3431,7 @@ void Executor::executeAlloc(ExecutionState &state,
       bindLocalConcrete(target, state,
           ConstantExpr::alloc(0, Context::get().getPointerWidth()));
     } else {
-      ObjectState *os = bindObjectInState(state, mo, isLocal);
+      ObjectState *os = bindObjectInState(parent, mo, isLocal);
       if (zeroMemory) {
         os->initializeToZero();
       } else {
@@ -3437,7 +3444,7 @@ void Executor::executeAlloc(ExecutionState &state,
         unsigned count = std::min(reallocFrom->size, os->size);
         for (unsigned i=0; i<count; i++)
           os->write(i, reallocFrom->read8(i), reallocFrom->read8Concrete(i));
-        state.addressSpace.unbindObject(reallocFrom->getObject());
+        parent.addressSpace.unbindObject(reallocFrom->getObject());
       }
     }
   } else {
@@ -3453,7 +3460,7 @@ void Executor::executeAlloc(ExecutionState &state,
     // collapses the size expression with a select.
 
     ref<ConstantExpr> example;
-    bool success = solver->getValue(state, size, example);
+    bool success = solver->getValue(parent, size, example);
     assert(success && "FIXME: Unhandled solver failure");
     (void) success;
     
@@ -3462,7 +3469,7 @@ void Executor::executeAlloc(ExecutionState &state,
     while (example->Ugt(ConstantExpr::alloc(128, W))->isTrue()) {
       ref<ConstantExpr> tmp = example->LShr(ConstantExpr::alloc(1, W));
       bool res;
-      bool success = solver->mayBeTrue(state, EqExpr::create(tmp, size), res);
+      bool success = solver->mayBeTrue(parent, EqExpr::create(tmp, size), res);
       assert(success && "FIXME: Unhandled solver failure");      
       (void) success;
       if (!res)
@@ -3533,7 +3540,7 @@ void Executor::executeFree(ExecutionState &state,
   }
   if (zeroPointer.second) { // address != 0
     ExactResolutionList rl;
-    resolveExact(*zeroPointer.second, address, rl, "free");
+    resolveExact(*zeroPointer.second->parent, address, rl, "free");
     
     for (Executor::ExactResolutionList::iterator it = rl.begin(), 
            ie = rl.end(); it != ie; ++it) {
@@ -3549,7 +3556,7 @@ void Executor::executeFree(ExecutionState &state,
                               "free.err",
                               getAddressInfo(*it->second, address));
       } else {
-        it->second->addressSpace.unbindObject(mo);
+        it->second->parent->addressSpace.unbindObject(mo);
         if (target) {
           bindLocal(target, *it->second, Expr::createPointer(0));
           bindLocalConcrete(target, *it->second, Expr::createPointer(0));
@@ -3795,11 +3802,11 @@ void Executor::executeMakeSymbolic(ExecutionState &state,
               ((!(AllowSeedExtension || ZeroSeedExtension)
                 && obj->numBytes < mo->size) ||
                (!AllowSeedTruncation && obj->numBytes > mo->size))) {
-	    std::stringstream msg;
-	    msg << "replace size mismatch: "
-		<< mo->name << "[" << mo->size << "]"
-		<< " vs " << obj->name << "[" << obj->numBytes << "]"
-		<< " in test\n";
+            std::stringstream msg;
+            msg << "replace size mismatch: "
+                << mo->name << "[" << mo->size << "]"
+                << " vs " << obj->name << "[" << obj->numBytes << "]"
+                << " in test\n";
 
             terminateStateOnError(state,
                                   msg.str(),

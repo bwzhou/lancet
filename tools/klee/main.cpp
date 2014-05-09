@@ -452,6 +452,9 @@ Module *pristineModule;
 void KleeHandler::processTestCase(const ExecutionState &state,
                                   const char *errorMessage, 
                                   const char *errorSuffix) {
+  if (state.parent != &state)
+    return;
+
   if (errorMessage && ExitOnError) {
     std::cerr << "EXITING ON ERROR:\n" << errorMessage << "\n";
     exit(1);

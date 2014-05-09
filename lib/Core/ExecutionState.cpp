@@ -146,14 +146,16 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     symbolic_branches(state.symbolic_branches),
     parent(this),
     blocked(state.blocked),
-    waitQueues(state.waitQueues) /* clone state has the same keys for queues */
+    waitQueues(state.waitQueues), /* clone state has the same keys for queues */
+    unblockedThreads(state.unblockedThreads)
 {
   assert(state.parent == &state); // should only be called by a parent thread
   threadId = 0;
   threads.push_back(this);
-  for (std::vector<ExecutionState*>::const_iterator t = state.threads.begin(),
-       e = state.threads.end(); t != e; ++t) {
-    threads.push_back(new ExecutionState(**t, this));
+
+  for (std::vector<ExecutionState*>::const_iterator I = state.threads.begin(),
+      E = state.threads.end(); I != E; ++I) {
+    threads.push_back(*I != NULL ? new ExecutionState(**I, this) : NULL);
   }
 
   for (unsigned int i=0; i<symbolics.size(); i++)
@@ -188,7 +190,8 @@ ExecutionState::ExecutionState(const ExecutionState& state, ExecutionState *p)
     //loopTotalCount(state.loopTotalCount),
     //symbolic_branches(state.symbolic_branches),
     parent(p),
-    blocked(state.blocked)
+    blocked(state.blocked),
+    unblockedThreads(state.unblockedThreads)
 {
   threads.push_back(this);
   threadId = parent->threads.size();
