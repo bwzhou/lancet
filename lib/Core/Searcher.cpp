@@ -846,8 +846,7 @@ void ThreadSearcher::update(ExecutionState *current,
          ie = current->unblockedThreads.end(); it != ie; ++it) {
       ExecutionState *s = current->parent->threads[*it];
       if (s && blockedStates.find(s) != blockedStates.end()) {
-        assert(s->blocked);
-        s->blocked = false;
+        assert(s->blocked == false); // Executor should have unblocked the thread
         unblockedStates.insert(s);
         blockedStates.erase(s);
       }
