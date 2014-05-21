@@ -3246,6 +3246,11 @@ void Executor::callExternalFunction(ExecutionState &state,
   }
 
   if (function->getName().startswith("pthread")) {
+    std::vector<ExecutionState*> &T = state.parent->threads;
+    std::map<uint64_t, std::deque<int> > &WQ = state.parent->waitQueues;
+    std::set<uint64_t> &LS = state.lockSet;
+    std::map<uint64_t, int> &LO = state.parent->lockOwner;
+    std::map<uint64_t, uint64_t> &MC = state.mutexOfCond;
 
     if (function->getName().equals("pthread_create")) {
     /*
@@ -3265,8 +3270,8 @@ void Executor::callExternalFunction(ExecutionState &state,
           statsTracker->framePushed(*child, 0);
 
         child->parent = state.parent;
-        child->threadId = state.parent->threads.size();
-        state.parent->threads.push_back(child);
+        child->threadId = T.size();
+        T.push_back(child);
         addedStates.insert(child);
         bindArgument(kf, 0, *child, arguments[3]);
         bindArgumentConcrete(kf, 0, *child, arguments[3]);
@@ -3290,27 +3295,165 @@ void Executor::callExternalFunction(ExecutionState &state,
      */
       if (ConstantExpr *tid = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t key = tid->getZExtValue();
-        state.parent->waitQueues[key].push_back(state.threadId);
+        WQ[key].push_back(state.threadId);
         state.blocked = true;
       } else {
-        llvm::errs() << "Non-constant pthread ID called by pthread_join\n";
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
       }
     } else if (function->getName().equals("pthread_exit")) {
     /*
      * void pthread_exit(void *retval);
      */
       uint64_t key = (uint64_t) &state;
-      if (state.parent->waitQueues.find(key) !=
-          state.parent->waitQueues.end()) {
-        std::vector<int> &Q = state.parent->waitQueues[key];
-        for (std::vector<int>::iterator it = Q.begin(), ie = Q.end();
+      if (WQ.find(key) != WQ.end()) {
+        std::deque<int> &Q = WQ[key];
+        for (std::deque<int>::iterator it = Q.begin(), ie = Q.end();
              it != ie; ++it) {
-          state.parent->threads[*it]->blocked = false;
+          T[*it]->blocked = false;
           state.unblockedThreads.push_back(*it);
         }
         Q.clear();
-        state.parent->waitQueues.erase(key);
+        WQ.erase(key);
       }
+    } else if (function->getName().equals("pthread_mutex_init")) {
+      /*
+       * int  pthread_mutex_init(pthread_mutex_t *mutex,
+       *                         const pthread_mutex_attr_t *mutexattr);
+       */
+      // Necessary?
+    } else if (function->getName().equals("pthread_mutex_lock")) {
+      /*
+       * int pthread_mutex_lock(pthread_mutex_t *mutex);
+       */
+      if (ConstantExpr *mutexId = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t key = mutexId->getZExtValue();
+        if (LO.find(key) == LO.end()) {
+          LS.insert(key);
+          LO[key] = state.threadId;
+        } else {
+          WQ[key].push_back(state.threadId);
+          state.blocked = true;
+        }
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
+    } else if (function->getName().equals("pthread_mutex_unlock")) {
+      /*
+       * int pthread_mutex_unlock(pthread_mutex_t *mutex);
+       */
+
+      if (ConstantExpr *mutexId = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t key = mutexId->getZExtValue();
+        assert(LS.find(key) != LS.end());
+        assert(LO.find(key) != LO.end());
+        assert(LO[key] == state.threadId);
+        LS.erase(key);
+        LO.erase(key);
+        if (WQ.find(key) != WQ.end() && !WQ[key].empty()) {
+          int firstThread = WQ[key].front();
+          WQ[key].pop_front();
+          T[firstThread]->lockSet.insert(key);
+          LO[key] = firstThread;
+          T[firstThread]->blocked = false;
+          state.unblockedThreads.push_back(firstThread);
+        }
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
+    } else if (function->getName().equals("pthread_cond_init")) {
+      /*
+       * int pthread_cond_init(pthread_cond_t *cond,
+       *                       pthread_condattr_t *cond_attr);
+       */
+
+      // Necessary?
+    } else if (function->getName().equals("pthread_cond_signal")) {
+      /*
+       * int pthread_cond_signal(pthread_cond_t *cond);
+       */
+
+      if (ConstantExpr *condId = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t condKey = condId->getZExtValue();
+        if (WQ.find(condKey) != WQ.end() && !WQ[condKey].empty()) {
+          int firstThread = WQ[condKey].front();
+          WQ[condKey].pop_front();
+          uint64_t mutexKey = MC[condKey];
+          if (LO.find(mutexKey) != LO.end()) { // wait morphing
+            WQ[mutexKey].push_back(state.threadId);
+          } else {
+            LS.insert(mutexKey);
+            LO[mutexKey] = state.threadId;
+            T[firstThread]->blocked = false;
+            state.unblockedThreads.push_back(firstThread);
+          }
+        }
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
+    } else if (function->getName().equals("pthread_cond_broadcast")) {
+      /*
+       * int pthread_cond_broadcast(pthread_cond_t *cond);
+       */
+
+      if (ConstantExpr *condId = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t condKey = condId->getZExtValue();
+        if (WQ.find(condKey) != WQ.end() && !WQ[condKey].empty()) {
+          // handle the first waked thread
+          int firstThread = WQ[condKey].front();
+          WQ[condKey].pop_front();
+          uint64_t mutexKey = MC[condKey];
+          if (LO.find(mutexKey) != LO.end()) { // wait morphing
+            WQ[mutexKey].push_back(state.threadId);
+          } else {
+            LS.insert(mutexKey);
+            LO[mutexKey] = state.threadId;
+            T[firstThread]->blocked = false;
+            state.unblockedThreads.push_back(firstThread);
+          }
+          // put the rest threads into wait queue for mutex
+          while (!WQ[condKey].empty()) {
+            WQ[mutexKey].push_back(WQ[condKey].front());
+            WQ[condKey].pop_front();
+          }
+          WQ.erase(condKey);
+        }
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
+    } else if (function->getName().equals("pthread_cond_wait")) {
+      /*
+       * int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+       */
+      ConstantExpr *condId = dyn_cast<ConstantExpr>(arguments[0]);
+      ConstantExpr *mutexId = dyn_cast<ConstantExpr>(arguments[1]);
+      if (condId && mutexId) {
+        uint64_t condKey = condId->getZExtValue();
+        uint64_t mutexKey = mutexId->getZExtValue();
+        // unlock the mutex
+        assert(LS.find(mutexKey) != LS.end());
+        assert(LO.find(mutexKey) != LO.end());
+        assert(LO[mutexKey] == state.threadId);
+        LS.erase(mutexKey);
+        LO.erase(mutexKey);
+        if (WQ.find(mutexKey) != WQ.end() && !WQ[mutexKey].empty()) {
+          int firstThread = WQ[mutexKey].front();
+          WQ[mutexKey].pop_front();
+          T[firstThread]->lockSet.insert(mutexKey);
+          LO[mutexKey] = firstThread;
+          T[firstThread]->blocked = false;
+          state.unblockedThreads.push_back(firstThread);
+        }
+        // wait on the cond
+        WQ[condKey].push_back(state.threadId);
+        state.blocked = true;
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
     } else {
       klee_warning("%s is skipped", function->getName().str().c_str());
     }

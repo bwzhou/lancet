@@ -22,6 +22,7 @@
 #include <set>
 #include <vector>
 #include <stack>
+#include <deque>
 
 namespace llvm {
   class Loop;
@@ -118,12 +119,24 @@ public:
 
   std::stack<KInstIterator> symbolic_branches;
 
+  // a pointer to parent thread
   ExecutionState *parent;
+  // a map from thread ID to ExecutionState
   std::vector<ExecutionState*> threads;
+  // thread ID
   int threadId;
-  bool blocked; // thread can wait on a single resource at a time
-  std::map<uint64_t, std::vector<int> > waitQueues; // a wait queue for each synchronization address
+  // thread can wait on a single resource at a time
+  bool blocked;
+  // a FIFO queue of threads waiting for each synchronization address
+  std::map<uint64_t, std::deque<int> > waitQueues;
+  // a list of thread unblocked by prevPC
   std::vector<int> unblockedThreads;
+  // a set of locks acquired by me
+  std::set<uint64_t> lockSet;
+  // a map from lock to owner ID
+  std::map<uint64_t, int> lockOwner;
+  // a per-thread map from cond to mutex
+  std::map<uint64_t, uint64_t> mutexOfCond;
 
   std::string getFnAlias(std::string fn);
   void addFnAlias(std::string old_fn, std::string new_fn);
