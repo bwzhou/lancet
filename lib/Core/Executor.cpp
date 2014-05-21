@@ -2932,14 +2932,7 @@ void Executor::run(ExecutionState &initialState) {
   searcher->update(0, states, std::set<ExecutionState*>());
 
   while (!states.empty() && !haltExecution) {
-    llvm::errs() << __FILE__ << ":" << __LINE__ << " states:";
-    for (std::set<ExecutionState*>::iterator S = states.begin(),
-         E = states.end(); S != E; ++S) {
-      llvm::errs() << *S << " ";
-    }
-    llvm::errs() << "\n";
-    ExecutionState &state = searcher->selectState(); // Let the executor know about the threads
-    llvm::errs() << __FILE__ << ":" << __LINE__ << "\n";
+    ExecutionState &state = searcher->selectState();
 
     KInstruction *ki = state.pc;
     stepInstruction(state);
@@ -3257,7 +3250,7 @@ void Executor::callExternalFunction(ExecutionState &state,
     std::map<uint64_t, std::deque<int> > &WQ = state.parent->waitQueues;
     std::set<uint64_t> &LS = state.lockSet;
     std::map<uint64_t, int> &LO = state.parent->lockOwner;
-    std::map<uint64_t, uint64_t> &MC = state.mutexOfCond;
+    std::map<uint64_t, uint64_t> &MC = state.parent->mutexOfCond;
 
     if (function->getName().equals("pthread_create")) {
     /*
@@ -3391,12 +3384,13 @@ void Executor::callExternalFunction(ExecutionState &state,
         if (WQ.find(condKey) != WQ.end() && !WQ[condKey].empty()) {
           int firstThread = WQ[condKey].front();
           WQ[condKey].pop_front();
+          assert(MC.find(condKey) != MC.end());
           uint64_t mutexKey = MC[condKey];
           if (LO.find(mutexKey) != LO.end()) { // wait morphing
-            WQ[mutexKey].push_back(state.threadId);
+            WQ[mutexKey].push_back(firstThread);
           } else {
-            LS.insert(mutexKey);
-            LO[mutexKey] = state.threadId;
+            T[firstThread]->lockSet.insert(mutexKey);
+            LO[mutexKey] = firstThread;
             T[firstThread]->blocked = false;
             state.unblockedThreads.push_back(firstThread);
           }
@@ -3416,12 +3410,13 @@ void Executor::callExternalFunction(ExecutionState &state,
           // handle the first waked thread
           int firstThread = WQ[condKey].front();
           WQ[condKey].pop_front();
+          assert(MC.find(condKey) != MC.end());
           uint64_t mutexKey = MC[condKey];
           if (LO.find(mutexKey) != LO.end()) { // wait morphing
             WQ[mutexKey].push_back(state.threadId);
           } else {
-            LS.insert(mutexKey);
-            LO[mutexKey] = state.threadId;
+            T[firstThread]->lockSet.insert(mutexKey);
+            LO[mutexKey] = firstThread;
             T[firstThread]->blocked = false;
             state.unblockedThreads.push_back(firstThread);
           }
@@ -3462,6 +3457,11 @@ void Executor::callExternalFunction(ExecutionState &state,
         // wait on the cond
         WQ[condKey].push_back(state.threadId);
         state.blocked = true;
+        if (MC.find(condKey) == MC.end()) {
+          MC[condKey] = mutexKey;
+        } else {
+          assert(MC[condKey] == mutexKey);
+        }
       } else {
         llvm::errs() << "Non-constant args in " << function->getName() << "\n";
       }
