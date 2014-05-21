@@ -2932,7 +2932,14 @@ void Executor::run(ExecutionState &initialState) {
   searcher->update(0, states, std::set<ExecutionState*>());
 
   while (!states.empty() && !haltExecution) {
+    llvm::errs() << __FILE__ << ":" << __LINE__ << " states:";
+    for (std::set<ExecutionState*>::iterator S = states.begin(),
+         E = states.end(); S != E; ++S) {
+      llvm::errs() << *S << " ";
+    }
+    llvm::errs() << "\n";
     ExecutionState &state = searcher->selectState(); // Let the executor know about the threads
+    llvm::errs() << __FILE__ << ":" << __LINE__ << "\n";
 
     KInstruction *ki = state.pc;
     stepInstruction(state);
@@ -3281,9 +3288,11 @@ void Executor::callExternalFunction(ExecutionState &state,
         // get the type of the variable pointed by the first element
         Type *t = dyn_cast<SequentialType>(pt)->getElementType();
         // create a constant expression of the same size as pthread_t
+        // XXX Implicit assumption:
+        // XXX sizeof(pthread_t) == sizeof(uint64_t) == sizeof(ExecutionState*)
         ref<Expr> tid = ConstantExpr::create(
             (uint64_t) child, getWidthForLLVMType(t));
-        // store thread ID in the address pointed by the first parameter
+        // store thread state address in the memory pointed by pthread_t
         executeMemoryOperation(state, true, arguments[0], tid, tid, 0);
 
         llvm::errs() << "created a thread " << child << " to run "
@@ -3295,8 +3304,11 @@ void Executor::callExternalFunction(ExecutionState &state,
      */
       if (ConstantExpr *tid = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t key = tid->getZExtValue();
-        WQ[key].push_back(state.threadId);
-        state.blocked = true;
+        // only wait for currently running threads
+        if (states.find((ExecutionState *) key) != states.end()) {
+          WQ[key].push_back(state.threadId);
+          state.blocked = true;
+        }
       } else {
         llvm::errs() << "Non-constant args in " << function->getName() << "\n";
       }
