@@ -147,7 +147,8 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     parent(this),
     blocked(state.blocked),
     waitQueues(state.waitQueues), /* clone state has the same keys for queues */
-    unblockedThreads(state.unblockedThreads)
+    unblockedThreads(state.unblockedThreads),
+    tsd(state.tsd)
 {
   assert(state.parent == &state); // should only be called by a parent thread
   threadId = 0;

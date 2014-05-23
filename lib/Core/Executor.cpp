@@ -2932,6 +2932,15 @@ void Executor::run(ExecutionState &initialState) {
   searcher->update(0, states, std::set<ExecutionState*>());
 
   while (!states.empty() && !haltExecution) {
+    /*
+     * llvm::errs() << "states: ";
+     * for (std::set<ExecutionState*>::iterator SI = states.begin(),
+     *      SE = states.end(); SI != SE; ++SI) {
+     *   llvm::errs() << *SI << " ";
+     * }
+     * llvm::errs() << "\n";
+     */
+
     ExecutionState &state = searcher->selectState();
 
     KInstruction *ki = state.pc;
@@ -3299,7 +3308,7 @@ void Executor::callExternalFunction(ExecutionState &state,
       if (ConstantExpr *tid = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t key = tid->getZExtValue();
         // only wait for currently running threads
-        if (states.find((ExecutionState *) key) != states.end()) {
+        if (WQ.find(key) == WQ.end() || !WQ[key].empty()) {
           WQ[key].push_back(state.threadId);
           state.blocked = true;
         }
@@ -3311,7 +3320,9 @@ void Executor::callExternalFunction(ExecutionState &state,
      * void pthread_exit(void *retval);
      */
       uint64_t key = (uint64_t) &state;
-      if (WQ.find(key) != WQ.end()) {
+      // Empty queue marks the thread as exited and
+      // all subsequent calls to join return immediately
+      if (!WQ[key].empty()) { // create an empty queue at key if key not exist
         std::deque<int> &Q = WQ[key];
         for (std::deque<int>::iterator it = Q.begin(), ie = Q.end();
              it != ie; ++it) {
@@ -3319,7 +3330,6 @@ void Executor::callExternalFunction(ExecutionState &state,
           state.unblockedThreads.push_back(*it);
         }
         Q.clear();
-        WQ.erase(key);
       }
     } else if (function->getName().equals("pthread_self")) {
       /*
@@ -3487,6 +3497,85 @@ void Executor::callExternalFunction(ExecutionState &state,
       } else {
         llvm::errs() << "Non-constant args in " << function->getName() << "\n";
       }
+
+    } else if (function->getName().equals("pthread_key_create")) {
+      /*
+       * int pthread_key_create(pthread_key_t *key,
+       *                        void (*destr_function) (void *));
+       */
+      
+      if (isa<ConstantExpr>(arguments[0])) {
+        // TODO handle TSD destructor
+        if (ConstantExpr *destr = dyn_cast<ConstantExpr>(arguments[1])) {
+          if (destr->getZExtValue()) {
+            llvm::errs() << "TSD destructor skipped\n";
+          }
+        }
+
+        // get the type of the first parameter
+        Type *pt = function->getFunctionType()->getParamType(0);
+        // get the type of the variable pointed by the first element
+        Type *t = dyn_cast<SequentialType>(pt)->getElementType();
+        // create a constant expression of the same size as pthread_key_t
+        // XXX Implicit assumption:
+        // XXX sizeof(pthread_key_t) == sizeof(uint64_t)
+        ref<Expr> key = ConstantExpr::create(
+            (uint64_t) state.parent->tsd.size(), getWidthForLLVMType(t));
+        // store TSD key in the memory pointed by pthread_key_t
+        executeMemoryOperation(state, true, arguments[0], key, key, 0);
+
+        state.parent->tsd.push_back(std::map<int, uint64_t>());
+        
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+    } else if (function->getName().equals("pthread_key_delete")) {
+      /*
+       * int pthread_key_delete(pthread_key_t key);
+       */
+      if (ConstantExpr *key = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t keyIndex = key->getZExtValue();
+        assert(keyIndex < state.parent->tsd.size());
+        std::map<int, uint64_t> &TSD = state.parent->tsd[keyIndex];
+        assert(TSD.find(-1) == TSD.end());
+        // mark the key as deleted
+        TSD.clear();
+        TSD[-1] = 0xdeadbeef;
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
+    } else if (function->getName().equals("pthread_setspecific")) {
+      /*
+       * int pthread_setspecific(pthread_key_t key, const void *pointer);
+       */
+      if (ConstantExpr *key = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t keyIndex = key->getZExtValue();
+        assert(keyIndex < state.parent->tsd.size());
+        std::map<int, uint64_t> &TSD = state.parent->tsd[keyIndex];
+        assert(TSD.find(-1) == TSD.end());
+        uint64_t value = dyn_cast<ConstantExpr>(arguments[1])->getZExtValue();
+        TSD[state.threadId] = value;
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
+    } else if (function->getName().equals("pthread_getspecific")) {
+      /*
+       * void * pthread_getspecific(pthread_key_t key);
+       */
+      if (ConstantExpr *key = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t keyIndex = key->getZExtValue();
+        assert(keyIndex < state.parent->tsd.size());
+        std::map<int, uint64_t> &TSD = state.parent->tsd[keyIndex];
+        assert(TSD.find(-1) == TSD.end());
+        if (TSD.find(state.threadId) != TSD.end()) {
+          RC = TSD[state.threadId];
+        } // RC = 0 if current thread hasn't set the key
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
     } else {
       klee_warning("%s is skipped", function->getName().str().c_str());
     }

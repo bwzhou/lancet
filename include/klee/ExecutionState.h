@@ -137,6 +137,8 @@ public:
   std::map<uint64_t, int> lockOwner;
   // a per-thread map from cond to mutex
   std::map<uint64_t, uint64_t> mutexOfCond;
+  // a vector of maps from thread ID to thread-specific data
+  std::vector<std::map<int, uint64_t> > tsd;
 
   std::string getFnAlias(std::string fn);
   void addFnAlias(std::string old_fn, std::string new_fn);
