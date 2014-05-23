@@ -3220,7 +3220,7 @@ void Executor::callExternalFunction(ExecutionState &state,
   // size we need, but this is faster, and the memory usage isn't significant.
   uint64_t *args = (uint64_t*) alloca(2*sizeof(*args) * (arguments.size() + 1));
   memset(args, 0, 2 * sizeof(*args) * (arguments.size() + 1));
-  unsigned wordIndex = 2;
+  unsigned wordIndex = 2; // the first 128 bits is for return value
   for (std::vector<ref<Expr> >::iterator ai = arguments.begin(), 
        ae = arguments.end(); ai!=ae; ++ai) {
     if (AllowExternalSymCalls) { // don't bother checking uniqueness
@@ -3251,6 +3251,7 @@ void Executor::callExternalFunction(ExecutionState &state,
     std::set<uint64_t> &LS = state.lockSet;
     std::map<uint64_t, int> &LO = state.parent->lockOwner;
     std::map<uint64_t, uint64_t> &MC = state.parent->mutexOfCond;
+    uint64_t RC = 0;
 
     if (function->getName().equals("pthread_create")) {
     /*
@@ -3320,6 +3321,11 @@ void Executor::callExternalFunction(ExecutionState &state,
         Q.clear();
         WQ.erase(key);
       }
+    } else if (function->getName().equals("pthread_self")) {
+      /*
+       * pthread_t pthread_self(void);
+       */
+      RC = (uint64_t) &state;
     } else if (function->getName().equals("pthread_mutex_init")) {
       /*
        * int  pthread_mutex_init(pthread_mutex_t *mutex,
@@ -3338,6 +3344,22 @@ void Executor::callExternalFunction(ExecutionState &state,
         } else {
           WQ[key].push_back(state.threadId);
           state.blocked = true;
+        }
+      } else {
+        llvm::errs() << "Non-constant args in " << function->getName() << "\n";
+      }
+
+    } else if (function->getName().equals("pthread_mutex_trylock")) {
+      /*
+       * int pthread_mutex_trylock(pthread_mutex_t *mutex);
+       */
+      if (ConstantExpr *mutexId = dyn_cast<ConstantExpr>(arguments[0])) {
+        uint64_t key = mutexId->getZExtValue();
+        if (LO.find(key) == LO.end()) {
+          LS.insert(key);
+          LO[key] = state.threadId;
+        } else {
+          RC = EBUSY;
         }
       } else {
         llvm::errs() << "Non-constant args in " << function->getName() << "\n";
@@ -3465,10 +3487,12 @@ void Executor::callExternalFunction(ExecutionState &state,
       } else {
         llvm::errs() << "Non-constant args in " << function->getName() << "\n";
       }
-
     } else {
       klee_warning("%s is skipped", function->getName().str().c_str());
     }
+
+    // store the return value
+    *args = RC;
 
   } else {
   
