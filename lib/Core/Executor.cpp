@@ -3254,7 +3254,7 @@ void Executor::callExternalFunction(ExecutionState &state,
     }
   }
 
-  if (function->getName().startswith("pthread")) {
+  if (function->getName().startswith("pthread_")) {
     std::vector<ExecutionState*> &T = state.parent->threads;
     std::map<uint64_t, std::deque<int> > &WQ = state.parent->waitQueues;
     std::set<uint64_t> &LS = state.lockSet;
@@ -3582,6 +3582,10 @@ void Executor::callExternalFunction(ExecutionState &state,
 
     // store the return value
     *args = RC;
+
+  } else if (function->getName().startswith("event_")) { // libevent
+
+    klee_warning("%s is skipped", function->getName().str().c_str());
 
   } else {
   

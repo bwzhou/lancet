@@ -1,4 +1,4 @@
-#===-- runtime/papi/Makefile ------- -----------------------*- Makefile -*--===#
+#===-- runtime/libevent/Makefile ---------------------------*- Makefile -*--===#
 #
 #                     The KLEE Symbolic Virtual Machine
 #
@@ -8,9 +8,8 @@
 #===------------------------------------------------------------------------===#
 
 LEVEL=../..
-PAPI_ROOT=../../../papi-5.0.0/src # FIXME move this into configure
 
-LIBRARYNAME=kleeRuntimePAPI
+LIBRARYNAME=kleeRuntimeLIBEVENT
 DONT_BUILD_RELINKED=1
 BUILD_ARCHIVE=1
 BYTECODE_LIBRARY=1
@@ -18,7 +17,6 @@ BYTECODE_LIBRARY=1
 DEBUG_RUNTIME=1
 NO_PEDANTIC=1
 
-C.Flags += -I$(PAPI_ROOT)
-LD.Flags += -L$(PAPI_ROOT)
+C.Flags += -I../../examples/libevent/include
 
 include $(LEVEL)/Makefile.common

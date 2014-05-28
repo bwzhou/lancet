@@ -171,8 +171,8 @@ int __fd_open(const char *pathname, int flags, mode_t mode) {
     }
 
     if (!has_permission(flags, df->stat)) {
-	errno = EACCES;
-	return -1;
+      errno = EACCES;
+      return -1;
     }
     else
       f->dfile->stat->st_mode = ((f->dfile->stat->st_mode & ~0777) |

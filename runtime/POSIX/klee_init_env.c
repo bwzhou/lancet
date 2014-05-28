@@ -90,6 +90,7 @@ void klee_init_env(int* argcPtr, char*** argvPtr) {
   char* new_argv[1024];
   unsigned max_len, min_argvs, max_argvs;
   unsigned sym_files = 0, sym_file_len = 0;
+  unsigned sym_sockets = 0, sym_socket_len = 0;
   int sym_stdout_flag = 0;
   int save_all_writes_flag = 0;
   int fd_fail = 0;
@@ -109,6 +110,7 @@ usage: (klee_init_env) [options] [program arguments]\n\
                               MAX arguments, each with maximum length N\n\
   -sym-files <NUM> <N>      - Make stdin and up to NUM symbolic files, each\n\
                               with maximum size N.\n\
+  -sym-sockets <NUM> <N>    - Make NUM symbolic sockets, each with size N\n\
   -sym-stdout               - Make stdout symbolic.\n\
   -max-fail <N>             - Allow up to <N> injected failures\n\
   -fd-fail                  - Shortcut for '-max-fail 1'\n\n");
@@ -157,6 +159,17 @@ usage: (klee_init_env) [options] [program arguments]\n\
       sym_file_len = __str_to_int(argv[k++], msg);
 
     }
+    else if (__streq(argv[k], "--sym-sockets") || __streq(argv[k], "-sym-sockets")) {
+      const char* msg = "--sym-sockets expects two integer arguments <no-sym-sockets> <sym-socket-len>";      
+
+      if (k+2 >= argc)
+	__emit_error(msg);
+      
+      k++;
+      sym_sockets = __str_to_int(argv[k++], msg);
+      sym_socket_len = __str_to_int(argv[k++], msg);
+
+    }
     else if (__streq(argv[k], "--sym-stdout") || __streq(argv[k], "-sym-stdout")) {
       sym_stdout_flag = 1;
       k++;
@@ -190,8 +203,6 @@ usage: (klee_init_env) [options] [program arguments]\n\
   *argcPtr = new_argc;
   *argvPtr = final_argv;
 
-  klee_init_fds(sym_files, sym_file_len, 
-		sym_stdout_flag, save_all_writes_flag, 
-		fd_fail);
+  klee_init_fds(sym_files, sym_file_len, sym_sockets, sym_socket_len,
+      sym_stdout_flag, save_all_writes_flag, fd_fail);
 }
-

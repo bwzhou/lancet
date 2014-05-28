@@ -41,6 +41,7 @@ typedef struct {
 
 typedef struct {
   unsigned n_sym_files; /* number of symbolic input files, excluding stdin */
+  unsigned n_sym_socks; /* number of symbolic sockets */
   exe_disk_file_t *sym_stdin, *sym_stdout;
   unsigned stdout_writes; /* how many chars were written to stdout */
   exe_disk_file_t *sym_files;
@@ -72,6 +73,7 @@ extern exe_file_system_t __exe_fs;
 extern exe_sym_env_t __exe_env;
 
 void klee_init_fds(unsigned n_files, unsigned file_length, 
+       unsigned n_socks, unsigned sock_length,
 		   int sym_stdout_flag, int do_all_writes_flag, 
 		   unsigned max_failures);
 void klee_init_env(int *argcPtr, char ***argvPtr);

@@ -108,19 +108,32 @@ static unsigned __sym_uint32(const char *name) {
 			 (file offset is always incremented)
    max_failures: maximum number of system call failures */
 void klee_init_fds(unsigned n_files, unsigned file_length, 
+       unsigned n_socks, unsigned sock_length, 
 		   int sym_stdout_flag, int save_all_writes_flag,
 		   unsigned max_failures) {
   unsigned k;
   char name[7] = "?-data";
   struct stat64 s;
+  unsigned n = n_files + n_socks;
 
   stat64(".", &s);
 
+
+  __exe_fs.sym_files = malloc(sizeof(*__exe_fs.sym_files) * n);
+
   __exe_fs.n_sym_files = n_files;
-  __exe_fs.sym_files = malloc(sizeof(*__exe_fs.sym_files) * n_files);
   for (k=0; k < n_files; k++) {
     name[0] = 'A' + k;
     __create_new_dfile(&__exe_fs.sym_files[k], file_length, name, &s);
+  }
+
+  __exe_fs.n_sym_socks = n_socks;
+  memcpy(name, "sock", 4);
+  assert(n_socks < 100);
+  for (k=0; k < n_socks; k++) {
+    name[4] = '0' + (k > 9 ? k / 10 : 0);
+    name[5] = '0' + (k % 10);
+    __create_new_dfile(&__exe_fs.sym_files[n_files+k], sock_length, name, &s);
   }
   
   /* setting symbolic stdin */
