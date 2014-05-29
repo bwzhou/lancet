@@ -223,7 +223,7 @@ void ExecutionState::popFrame() {
                << " exit function " << sf.kf->function->getName() << "\n";
   for (std::vector<const MemoryObject*>::iterator it = sf.allocas.begin(), 
          ie = sf.allocas.end(); it != ie; ++it)
-    addressSpace.unbindObject(*it);
+    parent->addressSpace.unbindObject(*it);
   stack.pop_back();
 }
 
@@ -331,15 +331,15 @@ bool ExecutionState::merge(const ExecutionState &b) {
 
   if (DebugLogStateMerge) {
     std::cerr << "\tchecking object states\n";
-    std::cerr << "A: " << addressSpace.objects << "\n";
-    std::cerr << "B: " << b.addressSpace.objects << "\n";
+    std::cerr << "A: " << parent->addressSpace.objects << "\n";
+    std::cerr << "B: " << b.parent->addressSpace.objects << "\n";
   }
     
   std::set<const MemoryObject*> mutated;
-  MemoryMap::iterator ai = addressSpace.objects.begin();
-  MemoryMap::iterator bi = b.addressSpace.objects.begin();
-  MemoryMap::iterator ae = addressSpace.objects.end();
-  MemoryMap::iterator be = b.addressSpace.objects.end();
+  MemoryMap::iterator ai = parent->addressSpace.objects.begin();
+  MemoryMap::iterator bi = b.parent->addressSpace.objects.begin();
+  MemoryMap::iterator ae = parent->addressSpace.objects.end();
+  MemoryMap::iterator be = b.parent->addressSpace.objects.end();
   for (; ai!=ae && bi!=be; ++ai, ++bi) {
     if (ai->first != bi->first) {
       if (DebugLogStateMerge) {
@@ -398,13 +398,13 @@ bool ExecutionState::merge(const ExecutionState &b) {
   for (std::set<const MemoryObject*>::iterator it = mutated.begin(), 
          ie = mutated.end(); it != ie; ++it) {
     const MemoryObject *mo = *it;
-    const ObjectState *os = addressSpace.findObject(mo);
-    const ObjectState *otherOS = b.addressSpace.findObject(mo);
+    const ObjectState *os = parent->addressSpace.findObject(mo);
+    const ObjectState *otherOS = b.parent->addressSpace.findObject(mo);
     assert(os && !os->readOnly && 
            "objects mutated but not writable in merging state");
     assert(otherOS);
 
-    ObjectState *wos = addressSpace.getWriteable(mo, os);
+    ObjectState *wos = parent->addressSpace.getWriteable(mo, os);
     for (unsigned i=0; i<mo->size; i++) {
       ref<Expr> av = wos->read8(i);
       ref<Expr> bv = otherOS->read8(i);

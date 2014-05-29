@@ -194,7 +194,7 @@ SpecialFunctionHandler::readStringAtAddress(ExecutionState &state,
   ObjectPair op;
   addressExpr = executor.toUnique(state, addressExpr);
   ref<ConstantExpr> address = cast<ConstantExpr>(addressExpr);
-  if (!state.addressSpace.resolveOne(address, op))
+  if (!state.parent->addressSpace.resolveOne(address, op))
     assert(0 && "XXX out of bounds / multiple resolution unhandled");
   bool res;
   assert(executor.solver->mustBeTrue(state, 
@@ -605,7 +605,7 @@ void SpecialFunctionHandler::handleCheckMemoryAccess(ExecutionState &state,
   } else {
     ObjectPair op;
 
-    if (!state.addressSpace.resolveOne(cast<ConstantExpr>(address), op)) {
+    if (!state.parent->addressSpace.resolveOne(cast<ConstantExpr>(address), op)) {
       executor.terminateStateOnError(state,
                                      "check_memory_access: memory error",
                                      "ptr.err",

@@ -637,9 +637,9 @@ void Executor::initializeGlobals(ExecutionState &state) {
        i != e; ++i) {
     if (i->hasInitializer()) {
       MemoryObject *mo = globalObjects.find(i)->second;
-      const ObjectState *os = state.addressSpace.findObject(mo);
+      const ObjectState *os = state.parent->addressSpace.findObject(mo);
       assert(os);
-      ObjectState *wos = state.addressSpace.getWriteable(mo, os);
+      ObjectState *wos = state.parent->addressSpace.getWriteable(mo, os);
       
       initializeGlobalObject(state, wos, i->getInitializer(), 0);
       // if(i->isConstant()) os->setReadOnly(true);
@@ -2932,14 +2932,12 @@ void Executor::run(ExecutionState &initialState) {
   searcher->update(0, states, std::set<ExecutionState*>());
 
   while (!states.empty() && !haltExecution) {
-    /*
-     * llvm::errs() << "states: ";
-     * for (std::set<ExecutionState*>::iterator SI = states.begin(),
-     *      SE = states.end(); SI != SE; ++SI) {
-     *   llvm::errs() << *SI << " ";
-     * }
-     * llvm::errs() << "\n";
-     */
+    llvm::errs() << "states: ";
+    for (std::set<ExecutionState*>::iterator SI = states.begin(),
+         SE = states.end(); SI != SE; ++SI) {
+      llvm::errs() << *SI << " ";
+    }
+    llvm::errs() << "\n";
 
     ExecutionState &state = searcher->selectState();
 
@@ -3028,9 +3026,9 @@ std::string Executor::getAddressInfo(ExecutionState &state,
   }
   
   MemoryObject hack((unsigned) example);    
-  MemoryMap::iterator lower = state.addressSpace.objects.upper_bound(&hack);
+  MemoryMap::iterator lower = state.parent->addressSpace.objects.upper_bound(&hack);
   info << "\tnext: ";
-  if (lower==state.addressSpace.objects.end()) {
+  if (lower==state.parent->addressSpace.objects.end()) {
     info << "none\n";
   } else {
     const MemoryObject *mo = lower->first;
@@ -3040,10 +3038,10 @@ std::string Executor::getAddressInfo(ExecutionState &state,
          << " of size " << mo->size << "\n"
          << "\t\t" << alloc_info << "\n";
   }
-  if (lower!=state.addressSpace.objects.begin()) {
+  if (lower!=state.parent->addressSpace.objects.begin()) {
     --lower;
     info << "\tprev: ";
-    if (lower==state.addressSpace.objects.end()) {
+    if (lower==state.parent->addressSpace.objects.end()) {
       info << "none\n";
     } else {
       const MemoryObject *mo = lower->first;
@@ -3583,13 +3581,15 @@ void Executor::callExternalFunction(ExecutionState &state,
     // store the return value
     *args = RC;
 
-  } else if (function->getName().startswith("event_")) { // libevent
-
-    klee_warning("%s is skipped", function->getName().str().c_str());
-
+/*
+ *   } else if (function->getName().startswith("event_")) { // libevent
+ * 
+ *     klee_warning("%s is skipped", function->getName().str().c_str());
+ * 
+ */
   } else {
   
-    state.addressSpace.copyOutConcretes();
+    state.parent->addressSpace.copyOutConcretes();
 
     if (!SuppressExternalWarnings) {
       std::ostringstream os;
@@ -3614,13 +3614,13 @@ void Executor::callExternalFunction(ExecutionState &state,
     }
 
     /*
-     * if (!state.addressSpace.copyInConcretes()) {
+     * if (!state.parent->addressSpace.copyInConcretes()) {
      *   terminateStateOnError(state, "external modified read-only object",
      *                         "external.err");
      *   return;
      * }
      */
-    if (!state.addressSpace.copyInConcretes()) {
+    if (!state.parent->addressSpace.copyInConcretes()) {
       llvm::errs() << "profile " << function->getName() << " modifies memory\n";
     } else {
       llvm::errs() << "profile " << function->getName() << " is readonly\n";
@@ -3671,10 +3671,10 @@ ObjectState *Executor::bindObjectInState(ExecutionState &state,
                                          const Array *array) {
   ObjectState *os = array ? new ObjectState(mo, array) : new ObjectState(mo);
   if (array) { // Copy concrete value over to the new ObjectState
-    const ObjectState *oldOs = state.addressSpace.findObject(mo);
+    const ObjectState *oldOs = state.parent->addressSpace.findObject(mo);
     memcpy(os->concreteStore, oldOs->concreteStore, mo->size);
   }
-  state.addressSpace.bindObject(mo, os);
+  state.parent->addressSpace.bindObject(mo, os);
 
   // Its possible that multiple bindings of the same mo in the state
   // will put multiple copies on this list, but it doesn't really
@@ -3844,7 +3844,7 @@ void Executor::resolveExact(ExecutionState &state,
                             const std::string &name) {
   // XXX we may want to be capping this?
   ResolutionList rl;
-  state.addressSpace.resolve(state, solver, p, rl);
+  state.parent->addressSpace.resolve(state, solver, p, rl);
   
   ExecutionState *unbound = &state;
   for (ResolutionList::iterator it = rl.begin(), ie = rl.end(); 
@@ -3971,7 +3971,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
                                 "memory error: object read only",
                                 "readonly.err");
         } else {
-          ObjectState *wos = bound->addressSpace.getWriteable(mo, os);
+          ObjectState *wos = bound->parent->addressSpace.getWriteable(mo, os);
           wos->write(offset, value, concrete_value);
         }
       } else {
@@ -4045,7 +4045,7 @@ void Executor::executeMakeSymbolic(ExecutionState &state,
       processTree->split(state.ptreeNode, second, &state);
     second->ptreeNode = res.first;
     state.ptreeNode = res.second; 
-    const ObjectState *os = second->addressSpace.findObject(mo);
+    const ObjectState *os = second->parent->addressSpace.findObject(mo);
     mutateConcrete(os->concreteStore, mo->size);
     // findNearestCommonDominator
     */
@@ -4336,7 +4336,7 @@ void Executor::doImpliedValueConcretization(ExecutionState &state,
       // FIXME: This is the sole remaining usage of the Array object
       // variable. Kill me.
       const MemoryObject *mo = 0; //re->updates.root->object;
-      const ObjectState *os = state.addressSpace.findObject(mo);
+      const ObjectState *os = state.parent->addressSpace.findObject(mo);
 
       if (!os) {
         // object has been free'd, no need to concretize (although as
@@ -4345,7 +4345,7 @@ void Executor::doImpliedValueConcretization(ExecutionState &state,
       } else {
         assert(!os->readOnly && 
                "not possible? read only object with static read?");
-        ObjectState *wos = state.addressSpace.getWriteable(mo, os);
+        ObjectState *wos = state.parent->addressSpace.getWriteable(mo, os);
         wos->write(CE, it->second);
       }
     }
