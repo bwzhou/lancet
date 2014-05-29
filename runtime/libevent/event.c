@@ -18,10 +18,10 @@ int event_add(struct event *ev, const struct timeval *tv) {
   return 0;
 }
 
-int event_base_loop(struct event_base *base, int flags) {
+int event_del(struct event *ev) {
   return 0;
 }
 
-int event_del(struct event *ev) {
+int event_base_loop(struct event_base *base, int flags) {
   return 0;
 }
