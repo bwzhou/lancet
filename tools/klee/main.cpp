@@ -148,8 +148,12 @@ namespace {
 
   cl::opt<bool>
   WithPAPI("papi",
-           cl::desc("Write .bc file with targeted loop instrumented with PAPI "
-                    "for each test case"),
+           cl::desc("Write .bc file with targeted loop instrumented with PAPI"),
+           cl::init(false));
+    
+  cl::opt<bool>
+  WithLIBEVENT("libevent",
+           cl::desc("Link with my own simple implementation of libevent"),
            cl::init(false));
     
   cl::opt<bool>
@@ -1420,6 +1424,13 @@ int main(int argc, char **argv, char **envp) {
     assert(mainModule && "unable to link with PAPI");
   }
 
+  if (WithLIBEVENT) {
+    llvm::sys::Path Path(Opts.LibraryDir);
+    Path.appendComponent("libkleeRuntimeLIBEVENT.bca");
+    klee_message("NOTE: Using LIBEVENT: %s", Path.c_str());
+    mainModule = klee::linkWithLibrary(mainModule, Path.c_str());
+    assert(mainModule && "unable to link with LIBEVENT");
+  }
 
   // Get the desired main function.  klee_main initializes uClibc
   // locale and other data and then calls main.

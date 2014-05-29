@@ -1,4 +1,5 @@
 #!/bin/bash
+ROOT=$(dirname $0)/..
 BC=$1
 LOG=$2
 shift
@@ -10,8 +11,9 @@ shift
 #shift
 
 ARG=$@
-#CMD="time Release+Asserts/bin/klee -use-concrete-explorer -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
-#CMD="time Debug+Asserts/bin/klee -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
-CMD="time Debug+Asserts/bin/klee -use-thread-search -libc=uclibc -posix-runtime -load=/home/bwzhou/klee/lancet/examples/libevent/lib/libevent.so $BC $ARG 2>$LOG"
+#CMD="time $ROOT/Release+Asserts/bin/klee -use-concrete-explorer -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
+#CMD="time $ROOT/Debug+Asserts/bin/klee -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
+#CMD="time $ROOT/Debug+Asserts/bin/klee -use-thread-search -libc=uclibc -posix-runtime -load=$ROOT/examples/libevent/lib/libevent.so $BC $ARG 2>$LOG"
+CMD="time $ROOT/Debug+Asserts/bin/klee -use-thread-search -libc=uclibc -posix-runtime -libevent $BC $ARG 2>$LOG"
 echo $CMD
 eval $CMD
