@@ -2,6 +2,7 @@
 #include "fd.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -32,17 +33,14 @@ int socket(int domain, int type, int protocol) {
   
   f = &__exe_env.fds[fd];
 
-  /* Should be the case if file was available, but just in case. */
-  memset(f, 0, sizeof *f);
-
   df = __get_sym_socket();
   if (df) {
     f->dfile = df;
     f->flags = eOpen | eReadable | eWriteable;
     return fd;
-  } else {
-    return -1;
   }
+
+  return -1;
 }
 
 int bind(int sockfd, const struct sockaddr *my_addr, socklen_t addrlen) {

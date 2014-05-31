@@ -2932,12 +2932,14 @@ void Executor::run(ExecutionState &initialState) {
   searcher->update(0, states, std::set<ExecutionState*>());
 
   while (!states.empty() && !haltExecution) {
-    llvm::errs() << "states: ";
-    for (std::set<ExecutionState*>::iterator SI = states.begin(),
-         SE = states.end(); SI != SE; ++SI) {
-      llvm::errs() << *SI << " ";
-    }
-    llvm::errs() << "\n";
+    /*
+     * llvm::errs() << "states: ";
+     * for (std::set<ExecutionState*>::iterator SI = states.begin(),
+     *      SE = states.end(); SI != SE; ++SI) {
+     *   llvm::errs() << *SI << " ";
+     * }
+     * llvm::errs() << "\n";
+     */
 
     ExecutionState &state = searcher->selectState();
 
@@ -3587,6 +3589,10 @@ void Executor::callExternalFunction(ExecutionState &state,
  *     klee_warning("%s is skipped", function->getName().str().c_str());
  * 
  */
+  } else if (function->getName().equals("__glibc_strerror_r")) {
+    // uclibc's libc/string is skipped for speed
+    klee_warning("%s is skipped", function->getName().str().c_str());
+
   } else {
   
     state.parent->addressSpace.copyOutConcretes();

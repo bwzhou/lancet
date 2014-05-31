@@ -91,7 +91,10 @@ int event_base_loop(struct event_base *base, int flags) {
   struct item *prev;
   for (prev = head; prev != tail; prev = prev->next) {
     struct event *ev = prev->next->event;
-    fprintf(stderr, "tid=%p, ev_base=%p, base=%p\n", (void *) pthread_self(), ev->ev_base, base); 
+    /*
+     * fprintf(stderr, "tid=%p, ev_base=%p, base=%p\n",
+     *         (void *) pthread_self(), ev->ev_base, base); 
+     */
     if (ev->ev_base == base) {
       (*ev->ev_callback)(ev->ev_fd, ev->ev_events, ev->ev_arg);
     }

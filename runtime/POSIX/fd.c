@@ -9,6 +9,7 @@
 
 #define _LARGEFILE64_SOURCE
 #include "fd.h"
+#include "pipe.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -313,6 +314,10 @@ int close(int fd) {
     return -1;
   } 
 
+  if (f->pipe) {
+    pipe_close(f->pipe);
+  }
+
   if (__exe_fs.max_failures && *__exe_fs.close_fail == n_calls) {
     __exe_fs.max_failures--;
     errno = EIO;
@@ -360,29 +365,37 @@ ssize_t read(int fd, void *buf, size_t count) {
   }
   
   if (!f->dfile) {
-    /* concrete file */
-    int r;
-    buf = __concretize_ptr(buf);
-    count = __concretize_size(count);
-    /* XXX In terms of looking for bugs we really should do this check
-       before concretization, at least once the routine has been fixed
-       to properly work with symbolics. */
-    klee_check_memory_access(buf, count);
-    if (f->fd == 0)
-      r = syscall(__NR_read, f->fd, buf, count);
-    else
-      r = syscall(__NR_pread64, f->fd, buf, count, (off64_t) f->off);
+    if (!f->pipe) {
+      /* concrete file */
+      int r;
+      buf = __concretize_ptr(buf);
+      count = __concretize_size(count);
+      /* XXX In terms of looking for bugs we really should do this check
+         before concretization, at least once the routine has been fixed
+         to properly work with symbolics. */
+      klee_check_memory_access(buf, count);
+      if (f->fd == 0)
+        r = syscall(__NR_read, f->fd, buf, count);
+      else
+        r = syscall(__NR_pread64, f->fd, buf, count, (off64_t) f->off);
 
-    if (r == -1) {
-      errno = klee_get_errno();
-      return -1;
+      if (r == -1) {
+        errno = klee_get_errno();
+        return -1;
+      }
+      
+      if (f->fd != 0)
+        f->off += r;
+      return r;
+    } else {
+      /* pipe */
+      if (fd != ((struct pipe *) f->pipe)->p_fdr) {
+        errno = EBADF;
+        return -1;
+      }
+      return pipe_read(f->pipe, buf, count);
     }
-    
-    if (f->fd != 0)
-      f->off += r;
-    return r;
-  }
-  else {
+  } else {
     assert(f->off >= 0);
     if (((off64_t)f->dfile->size) < f->off)
       return 0;
@@ -420,30 +433,38 @@ ssize_t write(int fd, const void *buf, size_t count) {
   }
 
   if (!f->dfile) {
-    int r;
+    if (!f->pipe) {
+      int r;
 
-    buf = __concretize_ptr(buf);
-    count = __concretize_size(count);
-    /* XXX In terms of looking for bugs we really should do this check
-       before concretization, at least once the routine has been fixed
-       to properly work with symbolics. */
-    klee_check_memory_access(buf, count);
-    if (f->fd == 1 || f->fd == 2)
-      r = syscall(__NR_write, f->fd, buf, count);
-    else r = syscall(__NR_pwrite64, f->fd, buf, count, (off64_t) f->off);
-    
-    if (r == -1) {
-      errno = klee_get_errno();
-      return -1;
+      buf = __concretize_ptr(buf);
+      count = __concretize_size(count);
+      /* XXX In terms of looking for bugs we really should do this check
+         before concretization, at least once the routine has been fixed
+         to properly work with symbolics. */
+      klee_check_memory_access(buf, count);
+      if (f->fd == 1 || f->fd == 2)
+        r = syscall(__NR_write, f->fd, buf, count);
+      else r = syscall(__NR_pwrite64, f->fd, buf, count, (off64_t) f->off);
+      
+      if (r == -1) {
+        errno = klee_get_errno();
+        return -1;
+      }
+      
+      assert(r >= 0);
+      if (f->fd != 1 && f->fd != 2)
+        f->off += r;
+
+      return r;
+    } else {
+      /* pipe */
+      if (fd != ((struct pipe *) f->pipe)->p_fdw) {
+        errno = EBADF;
+        return -1;
+      }
+      return pipe_write(f->pipe, buf, count);
     }
-    
-    assert(r >= 0);
-    if (f->fd != 1 && f->fd != 2)
-      f->off += r;
-
-    return r;
-  }
-  else {
+  } else {
     /* symbolic file */    
     size_t actual_count = 0;
     if (f->off + count <= f->dfile->size)
@@ -1087,8 +1108,11 @@ int fcntl(int fd, int cmd, ...) {
       */
       return 0;
     }
+    case F_SETFL: {
+      return 0;
+    }
     default:
-      klee_warning("symbolic file, ignoring (EINVAL)");
+      klee_warning("Operation not supported by symbolic file");
       errno = EINVAL;
       return -1;
     }

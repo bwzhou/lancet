@@ -37,6 +37,7 @@ typedef struct {
                                has eOpen. */
   off64_t off;              /* offset */
   exe_disk_file_t* dfile;   /* ptr to file on disk, if symbolic */
+  void *pipe;               /* ptr to pipe, NULL for regular file */
 } exe_file_t;
 
 typedef struct {
