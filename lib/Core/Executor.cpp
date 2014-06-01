@@ -3307,6 +3307,7 @@ void Executor::callExternalFunction(ExecutionState &state,
      */
       if (ConstantExpr *tid = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t key = tid->getZExtValue();
+        llvm::errs() << function->getName() << " key=" << (void *) key << "\n";
         // only wait for currently running threads
         if (WQ.find(key) == WQ.end() || !WQ[key].empty()) {
           WQ[key].push_back(state.threadId);
@@ -3320,6 +3321,7 @@ void Executor::callExternalFunction(ExecutionState &state,
      * void pthread_exit(void *retval);
      */
       uint64_t key = (uint64_t) &state;
+      llvm::errs() << function->getName() << " key=" << (void *) key << "\n";
       // Empty queue marks the thread as exited and
       // all subsequent calls to join return immediately
       if (!WQ[key].empty()) { // create an empty queue at key if key not exist
@@ -3348,6 +3350,7 @@ void Executor::callExternalFunction(ExecutionState &state,
        */
       if (ConstantExpr *mutexId = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t key = mutexId->getZExtValue();
+        llvm::errs() << function->getName() << " key=" << (void *) key << "\n";
         if (LO.find(key) == LO.end()) {
           LS.insert(key);
           LO[key] = state.threadId;
@@ -3365,6 +3368,7 @@ void Executor::callExternalFunction(ExecutionState &state,
        */
       if (ConstantExpr *mutexId = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t key = mutexId->getZExtValue();
+        llvm::errs() << function->getName() << " key=" << (void *) key << "\n";
         if (LO.find(key) == LO.end()) {
           LS.insert(key);
           LO[key] = state.threadId;
@@ -3382,18 +3386,23 @@ void Executor::callExternalFunction(ExecutionState &state,
 
       if (ConstantExpr *mutexId = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t key = mutexId->getZExtValue();
-        assert(LS.find(key) != LS.end());
-        assert(LO.find(key) != LO.end());
-        assert(LO[key] == state.threadId);
-        LS.erase(key);
-        LO.erase(key);
-        if (WQ.find(key) != WQ.end() && !WQ[key].empty()) {
-          int firstThread = WQ[key].front();
-          WQ[key].pop_front();
-          T[firstThread]->lockSet.insert(key);
-          LO[key] = firstThread;
-          T[firstThread]->blocked = false;
-          state.unblockedThreads.push_back(firstThread);
+        llvm::errs() << function->getName() << " key=" << (void *) key << "\n";
+        if (LS.find(key) == LS.end()) {
+          llvm::errs() << "ERROR: attempt to unlock a mutex not owned by me\n";
+        } else {
+          assert(LS.find(key) != LS.end());
+          assert(LO.find(key) != LO.end());
+          assert(LO[key] == state.threadId);
+          LS.erase(key);
+          LO.erase(key);
+          if (WQ.find(key) != WQ.end() && !WQ[key].empty()) {
+            int firstThread = WQ[key].front();
+            WQ[key].pop_front();
+            T[firstThread]->lockSet.insert(key);
+            LO[key] = firstThread;
+            T[firstThread]->blocked = false;
+            state.unblockedThreads.push_back(firstThread);
+          }
         }
       } else {
         llvm::errs() << "Non-constant args in " << function->getName() << "\n";
@@ -3413,6 +3422,7 @@ void Executor::callExternalFunction(ExecutionState &state,
 
       if (ConstantExpr *condId = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t condKey = condId->getZExtValue();
+        llvm::errs() << function->getName() << " key=" << (void *) condKey << "\n";
         if (WQ.find(condKey) != WQ.end() && !WQ[condKey].empty()) {
           int firstThread = WQ[condKey].front();
           WQ[condKey].pop_front();
@@ -3438,6 +3448,7 @@ void Executor::callExternalFunction(ExecutionState &state,
 
       if (ConstantExpr *condId = dyn_cast<ConstantExpr>(arguments[0])) {
         uint64_t condKey = condId->getZExtValue();
+        llvm::errs() << function->getName() << " key=" << (void *) condKey << "\n";
         if (WQ.find(condKey) != WQ.end() && !WQ[condKey].empty()) {
           // handle the first waked thread
           int firstThread = WQ[condKey].front();
@@ -3472,6 +3483,11 @@ void Executor::callExternalFunction(ExecutionState &state,
       if (condId && mutexId) {
         uint64_t condKey = condId->getZExtValue();
         uint64_t mutexKey = mutexId->getZExtValue();
+        llvm::errs()
+          << function->getName()
+          << " cond=" << (void *) condKey
+          << " mutex=" << (void *) mutexKey
+          << "\n";
         // unlock the mutex
         assert(LS.find(mutexKey) != LS.end());
         assert(LO.find(mutexKey) != LO.end());
