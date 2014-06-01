@@ -3680,6 +3680,7 @@ ObjectState *Executor::bindObjectInState(ExecutionState &state,
     const ObjectState *oldOs = state.parent->addressSpace.findObject(mo);
     memcpy(os->concreteStore, oldOs->concreteStore, mo->size);
   }
+  // XXX locals are allocated in parent thread's address space
   state.parent->addressSpace.bindObject(mo, os);
 
   // Its possible that multiple bindings of the same mo in the state
@@ -3687,6 +3688,7 @@ ObjectState *Executor::bindObjectInState(ExecutionState &state,
   // matter because all we use this list for is to unbind the object
   // on function return.
   if (isLocal)
+    // XXX locals are associated with stack frames of the allocating thread
     state.stack.back().allocas.push_back(mo);
 
   return os;
@@ -3709,7 +3711,15 @@ void Executor::executeAlloc(ExecutionState &state,
       bindLocalConcrete(target, state,
           ConstantExpr::alloc(0, Context::get().getPointerWidth()));
     } else {
-      ObjectState *os = bindObjectInState(parent, mo, isLocal);
+      // Fix: don't bind locals to the parent stack otherwise they would be
+      // released when the parent thread exits the current function
+      ObjectState *os = bindObjectInState(state, mo, isLocal);
+      /*
+       * std::cerr
+       *   << __FILE__ << ":" << __LINE__
+       *   << ":Alloca:" << (void *) mo->address << ":" << mo->size
+       *   << "\n";
+       */
       if (zeroMemory) {
         os->initializeToZero();
       } else {
@@ -3904,6 +3914,17 @@ void Executor::executeMemoryOperation(ExecutionState &state,
   }
   solver->setTimeout(0);
 
+  /*
+   * std::cerr
+   *   << __FILE__ << ":" << __LINE__
+   *   << " state:" << &state
+   *   << (isWrite ? " W" : " R")
+   *   << " address:" << (void *) cast<ConstantExpr>(address)->getZExtValue()
+   *   << " bytes:" << bytes
+   *   << " fast-path-success:" << success
+   *   << "\n";
+   */
+
   if (success) {
     const MemoryObject *mo = op.first;
 
@@ -3918,6 +3939,19 @@ void Executor::executeMemoryOperation(ExecutionState &state,
     bool success = solver->mustBeTrue(parent, 
                                       mo->getBoundsCheckOffset(offset, bytes),
                                       inBounds);
+    /*
+     * std::cerr
+     *   << __FILE__ << ":" << __LINE__
+     *   << " state:" << &state
+     *   << " base:" << (void *) mo->address
+     *   << " size:" << mo->size
+     *   << " offset:" << offset
+     *   << " bytes:" << bytes
+     *   << " check:" << mo->getBoundsCheckOffset(offset, bytes)
+     *   << " result:" << inBounds
+     *   << "\n";
+     */
+
     solver->setTimeout(0);
     if (!success) {
       state.pc = state.prevPC;
@@ -3946,7 +3980,15 @@ void Executor::executeMemoryOperation(ExecutionState &state,
 
       return;
     }
-  } 
+  }
+
+  /*
+   * std::cerr
+   *   << __FILE__ << ":" << __LINE__
+   *   << " state:" << &state
+   *   << " on-error-path"
+   *   << "\n";
+   */
 
   // we are on an error path (no resolution, multiple resolution, one
   // resolution with out of bounds)

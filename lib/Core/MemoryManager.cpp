@@ -26,6 +26,13 @@ using namespace klee;
 MemoryManager::~MemoryManager() { 
   while (!objects.empty()) {
     MemoryObject *mo = *objects.begin();
+    /*
+     * std::cerr
+     *   << __func__
+     *   << " base:" << (void *) mo->address
+     *   << " size:" << mo->size
+     *   << " freed\n";
+     */
     if (!mo->isFixed)
       free((void *)mo->address);
     objects.erase(mo);
@@ -75,6 +82,13 @@ void MemoryManager::deallocate(const MemoryObject *mo) {
 void MemoryManager::markFreed(MemoryObject *mo) {
   if (objects.find(mo) != objects.end())
   {
+    /*
+     * std::cerr
+     *   << __func__
+     *   << " base:" << (void *) mo->address
+     *   << " size:" << mo->size
+     *   << " freed\n";
+     */
     if (!mo->isFixed)
       free((void *)mo->address);
     objects.erase(mo);
