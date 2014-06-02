@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <event.h>
 #include <event2/event-config.h>
 #include <pthread.h>
@@ -5,40 +6,46 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-// my own collection of event_base for use in event_init
-#define MAX_EVENT_BASE 16
-char event_bases[MAX_EVENT_BASE];
-int event_base_next = 0;
-
 // copied from event-internal.h
 #define ev_callback ev_evcallback.evcb_cb_union.evcb_callback
 #define ev_arg ev_evcallback.evcb_arg
 
-// global queue for all events
-typedef struct item {
+#define MAX_EVENT_BASE 16
+char __event_base_handle[MAX_EVENT_BASE];
+int __event_base_next = 0;
+
+struct item {
   struct event *event;
-  struct item *prev;
-  struct item *next;
-} item;
-static struct item first = {NULL, NULL, NULL};
-static struct item *head = &first;
-static struct item *tail = &first;
+  volatile struct item *prev;
+  volatile struct item *next;
+};
+
+struct queue {
+  struct item first;
+  volatile struct item *head;
+  volatile struct item *tail;
+};
+
+struct queue __event_base_q[MAX_EVENT_BASE];
+#define event_base_q(b) __event_base_q[(char *) b - __event_base_handle]
 
 static void enqueue(struct event *ev) {
-  if (ev == NULL)
+  if (ev == NULL || ev->ev_base == NULL)
     return;
-  tail->next = calloc(1, sizeof(struct item));
-  tail->next->prev = tail;
-  tail = tail->next;
-  tail->event = ev;
-  tail->next = NULL;
+  struct queue *bq = &event_base_q(ev->ev_base);
+  bq->tail->next = calloc(1, sizeof(struct item));
+  bq->tail->next->prev = bq->tail;
+  bq->tail = bq->tail->next;
+  bq->tail->event = ev;
+  bq->tail->next = NULL;
 }
 
 static void dequeue(struct event *ev) {
-  struct item *prev, *cur;
-  if (ev == NULL)
+  volatile struct item *prev, *cur;
+  if (ev == NULL || ev->ev_base == NULL)
     return;
-  for (prev = head; prev != tail; prev = prev->next) {
+  struct queue *bq = &event_base_q(ev->ev_base);
+  for (prev = bq->head; prev != bq->tail; prev = prev->next) {
     cur = prev->next;
     if (cur->event->ev_fd == ev->ev_fd &&
         cur->event->ev_events == ev->ev_events &&
@@ -46,17 +53,23 @@ static void dequeue(struct event *ev) {
       prev->next = cur->next;
       if (cur->next)
         cur->next->prev = prev;
-      free(cur);
-      break;
+      free((void *) cur);
+      break; // FIXME possible to have multiple matches?
     }
   }
 }
 
 struct event_base *event_init(void) {
-  if (event_base_next < MAX_EVENT_BASE)
-    return (struct event_base *) &event_bases[event_base_next++];
-  else
-    return NULL;
+  if (__event_base_next < MAX_EVENT_BASE) {
+    struct queue *bq = &__event_base_q[__event_base_next];
+    bq->first.event = NULL;
+    bq->first.prev = NULL;
+    bq->first.next = NULL;
+    bq->head = &bq->first;
+    bq->tail = &bq->first;
+    return (struct event_base *) &__event_base_handle[__event_base_next++];
+  }
+  return NULL;
 }
 
 void event_set(struct event *ev, evutil_socket_t fd, short events,
@@ -87,17 +100,20 @@ int event_del(struct event *ev) {
  * event_base_loop just goes through all events and process the ones that were
  * attached to it.
  */
+/*
+ * event_base_loop exits when no events are associated with the base
+ */
 int event_base_loop(struct event_base *base, int flags) {
-  struct item *prev;
-  for (prev = head; prev != tail; prev = prev->next) {
+  volatile struct item *prev;
+  struct queue *bq = &event_base_q(base);
+  for (prev = bq->head; prev != bq->tail; prev = prev->next) {
     struct event *ev = prev->next->event;
     /*
      * fprintf(stderr, "tid=%p, ev_base=%p, base=%p\n",
      *         (void *) pthread_self(), ev->ev_base, base); 
      */
-    if (ev->ev_base == base) {
-      (*ev->ev_callback)(ev->ev_fd, ev->ev_events, ev->ev_arg);
-    }
+    assert(ev->ev_base == base);
+    (*ev->ev_callback)(ev->ev_fd, ev->ev_events, ev->ev_arg);
   }
   return 0;
 }
