@@ -3084,8 +3084,11 @@ std::string Executor::getAddressInfo(ExecutionState &state,
 
 void Executor::terminateState(ExecutionState &state) {
   std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
-            << " state " << &state
-            << std::endl;
+            << " state " << &state << " threads";
+  for (unsigned i = 0; i < state.parent->threads.size(); ++i) {
+    std::cerr << " " << state.parent->threads[i];
+  }
+  std::cerr << std::endl;
 
   if (replayOut && replayPosition!=replayOut->numObjects) {
     klee_warning_once(replayOut, 
@@ -3906,7 +3909,7 @@ void Executor::resolveExact(ExecutionState &state,
                             const std::string &name) {
   // XXX we may want to be capping this?
   ResolutionList rl;
-  state.parent->addressSpace.resolve(state, solver, p, rl);
+  state.parent->addressSpace.resolve(*state.parent, solver, p, rl);
   
   ExecutionState *unbound = &state;
   for (ResolutionList::iterator it = rl.begin(), ie = rl.end(); 
@@ -3964,6 +3967,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
    * std::cerr
    *   << __FILE__ << ":" << __LINE__
    *   << " state:" << &state
+   *   << " parent:" << state.parent
    *   << (isWrite ? " W" : " R")
    *   << " address:" << (void *) cast<ConstantExpr>(address)->getZExtValue()
    *   << " bytes:" << bytes
@@ -4046,7 +4050,7 @@ void Executor::executeMemoryOperation(ExecutionState &state,
   solver->setTimeout(0);
   
   // XXX there is some query wasteage here. who cares?
-  ExecutionState *unbound = &parent;
+  ExecutionState *unbound = &state; // Fix: the child not the parent that errs
   
   for (ResolutionList::iterator i = rl.begin(), ie = rl.end(); i != ie; ++i) {
     const MemoryObject *mo = i->first;

@@ -79,7 +79,7 @@ void event_active(struct event *ev, int what, short ncalls) {
     return;
   struct queue *bq = &event_base_q(ev->ev_base);
   lock(bq);
-  for (prev = bq->head; prev != bq->tail; prev = prev->next) {
+  for (prev = bq->head; prev && prev->next; prev = prev->next) {
     cur = prev->next;
     if (cur->event->ev_fd == ev->ev_fd &&
         cur->event->ev_events == ev->ev_events &&
@@ -111,10 +111,19 @@ static void enqueue(struct event *ev) {
   i->prev = bq->tail;
   bq->tail = i;
 
+  /*
+   * TODO get rid of bq->tail by insert after bq->head
+   *
+   * i->next = bq->head->next;
+   * bq->head->next->prev = i;
+   * bq->head->next = i;
+   * i->prev = bq->head;
+   */
+
   printf("enqueue state %p item %p\n", (void *) pthread_self(),
          (void *) i);
 
-  signal(bq);
+  signal(bq); // FIXME Necessary?
   unlock(bq);
 }
 
@@ -124,7 +133,7 @@ static void dequeue(struct event *ev) {
     return;
   struct queue *bq = &event_base_q(ev->ev_base);
   lock(bq);
-  for (prev = bq->head; prev != bq->tail; prev = prev->next) {
+  for (prev = bq->head; prev && prev->next; prev = prev->next) {
     cur = prev->next;
     if (cur->event->ev_fd == ev->ev_fd &&
         cur->event->ev_events == ev->ev_events &&
@@ -136,6 +145,8 @@ static void dequeue(struct event *ev) {
       prev->next = cur->next;
       if (cur->next)
         cur->next->prev = prev;
+      else // Fix: cur may be the last item
+        bq->tail = prev;
 
       free((void *) cur);
 
@@ -143,6 +154,7 @@ static void dequeue(struct event *ev) {
              (void *) cur);
 
       signal(bq); // FIXME What if multiple matches?
+                  // FIXME Necessary?
       break;
     }
   }
@@ -200,25 +212,37 @@ int event_base_loop(struct event_base *base, int flags) {
   struct queue *bq = &event_base_q(base);
   struct event *ev;
   lock(bq);
-  while (bq->head != bq->tail) {
-    for (prev = bq->head; prev != bq->tail; prev = prev->next) {
+  while (bq->head->next) {
+    /* 
+     * Fix: ev_callback can free the current item so
+     * prev->next may become nil inside the loop
+     */
+    for (prev = bq->head; prev && prev->next; prev = prev->next) {
       cur = prev->next;
       ev = cur->event;
 
-      printf("%s state %p item %p\n", __func__, (void *) pthread_self(),
-             (void *) cur);
-
       assert(ev->ev_base == base);
-      while (cur->pending > 0) {
+      /* 
+       * Fix: ev_callback can free the current item so
+       * cache the value of cur->pending in a local variable
+       */
+      int count = cur->pending;
+      cur->pending = 0;
+      while (count-- > 0) {
 
-        fprintf(stderr, "state %p base %p event %p pending %d\n",
-                (void *) pthread_self(), (void *) ev->ev_base, (void *) ev,
-                cur->pending); 
+        /*
+         * printf("state %p base %p event %p pending %d\n",
+         *         (void *) pthread_self(), (void *) ev->ev_base, (void *) ev,
+         *         count); 
+         */
 
         unlock(bq); // Fix: prevent deadlock between bq and pipe
         (*ev->ev_callback)(ev->ev_fd, ev->ev_events, ev->ev_arg);
+        /* 
+         * Fix: ev_callback can free the current item so
+         * the item should not be accessed after the callback
+         */
         lock(bq);
-        --cur->pending;
       }
     }
     wait(bq);
