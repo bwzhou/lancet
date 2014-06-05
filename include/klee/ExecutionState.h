@@ -139,6 +139,8 @@ public:
   std::map<uint64_t, uint64_t> mutexOfCond;
   // a vector of maps from thread ID to thread-specific data
   std::vector<std::map<int, uint64_t> > tsd;
+  // enable debugging
+  bool debugging;
 
   std::string getFnAlias(std::string fn);
   void addFnAlias(std::string old_fn, std::string new_fn);

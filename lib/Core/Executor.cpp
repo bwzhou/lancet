@@ -671,13 +671,16 @@ void Executor::branch(ExecutionState &state,
     for (unsigned i=1; i<N; ++i) {
       ExecutionState *es = result[theRNG.getInt32() % i];
       ExecutionState *ns = es->branch();
-      addedStates.insert(ns);
+      addedStates.insert(ns->parent->threads.begin(),
+          ns->parent->threads.end());
       result.push_back(ns);
-      es->ptreeNode->data = 0;
-      std::pair<PTree::Node*,PTree::Node*> res = 
-        processTree->split(es->ptreeNode, ns, es);
-      ns->ptreeNode = res.first;
-      es->ptreeNode = res.second;
+      if (es->ptreeNode) {
+        es->ptreeNode->data = 0;
+        std::pair<PTree::Node*,PTree::Node*> res = 
+          processTree->split(es->ptreeNode, ns, es);
+        ns->ptreeNode = res.first;
+        es->ptreeNode = res.second;
+      }
     }
   }
 
@@ -700,7 +703,7 @@ void Executor::branch(ExecutionState &state,
       for (i=0; i<N; ++i) {
         ref<ConstantExpr> res;
         bool success = 
-          solver->getValue(state, siit->assignment.evaluate(conditions[i]), 
+          solver->getValue(*state.parent, siit->assignment.evaluate(conditions[i]), 
                            res);
         assert(success && "FIXME: Unhandled solver failure");
         (void) success;
@@ -760,7 +763,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
          cpn && (cpn->statistics.getValue(stats::solverTime) > 
                  stats::solverTime*MaxStaticCPSolvePct))) {
       ref<ConstantExpr> value; 
-      bool success = solver->getValue(current, condition, value);
+      bool success = solver->getValue(*current.parent, condition, value);
       assert(success && "FIXME: Unhandled solver failure");
       (void) success;
       addConstraint(current, EqExpr::create(value, condition));
@@ -779,7 +782,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
   if (isSeeding)
     timeout *= it->second.size();
   solver->setTimeout(timeout);
-  bool success = solver->evaluate(current, condition, res);
+  bool success = solver->evaluate(*current.parent, condition, res);
   solver->setTimeout(0);
   if (!success) {
     current.pc = current.prevPC;
@@ -847,7 +850,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
            siie = it->second.end(); siit != siie; ++siit) {
       ref<ConstantExpr> res;
       bool success = 
-        solver->getValue(current, siit->assignment.evaluate(condition), res);
+        solver->getValue(*current.parent, siit->assignment.evaluate(condition), res);
       assert(success && "FIXME: Unhandled solver failure");
       (void) success;
       if (res->isTrue()) {
@@ -900,8 +903,10 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
       falseState = trueState;
     } else {
       falseState = trueState->branch();
-      addedStates.insert(falseState->parent->threads.begin(),
+      addedStates.insert(
+          falseState->parent->threads.begin(),
           falseState->parent->threads.end());
+
       if (trueState->loopBB) {
         std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
                   << " roller state " << trueState
@@ -927,7 +932,7 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
              siie = seeds.end(); siit != siie; ++siit) {
         ref<ConstantExpr> res;
         bool success = 
-          solver->getValue(current, siit->assignment.evaluate(condition), res);
+          solver->getValue(*current.parent, siit->assignment.evaluate(condition), res);
         assert(success && "FIXME: Unhandled solver failure");
         (void) success;
         if (res->isTrue()) {
@@ -953,11 +958,13 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
     }
 
     if (!UseConcreteExplorer) {
-      current.ptreeNode->data = 0;
-      std::pair<PTree::Node*, PTree::Node*> res =
-        processTree->split(current.ptreeNode, falseState, trueState);
-      falseState->ptreeNode = res.first;
-      trueState->ptreeNode = res.second;
+      if (current.ptreeNode) {
+        current.ptreeNode->data = 0;
+        std::pair<PTree::Node*, PTree::Node*> res =
+          processTree->split(current.ptreeNode, falseState, trueState);
+        falseState->ptreeNode = res.first;
+        trueState->ptreeNode = res.second;
+      }
     }
 
     if (!isInternal) {
@@ -1019,7 +1026,7 @@ void Executor::addConstraint(ExecutionState &state, ref<Expr> condition) {
            siie = it->second.end(); siit != siie; ++siit) {
       bool res;
       bool success = 
-        solver->mustBeFalse(state, siit->assignment.evaluate(condition), res);
+        solver->mustBeFalse(*state.parent, siit->assignment.evaluate(condition), res);
       assert(success && "FIXME: Unhandled solver failure");
       (void) success;
       if (res) {
@@ -1148,8 +1155,8 @@ ref<Expr> Executor::toUnique(const ExecutionState &state,
     bool isTrue = false;
 
     solver->setTimeout(coreSolverTimeout);      
-    if (solver->getValue(state, e, value) &&
-        solver->mustBeTrue(state, EqExpr::create(e, value), isTrue) &&
+    if (solver->getValue(*state.parent, e, value) &&
+        solver->mustBeTrue(*state.parent, EqExpr::create(e, value), isTrue) &&
         isTrue)
       result = value;
     solver->setTimeout(0);
@@ -1170,7 +1177,7 @@ Executor::toConstant(ExecutionState &state,
     return CE;
 
   ref<ConstantExpr> value;
-  bool success = solver->getValue(state, e, value);
+  bool success = solver->getValue(*state.parent, e, value);
   assert(success && "FIXME: Unhandled solver failure");
   (void) success;
     
@@ -1197,7 +1204,7 @@ void Executor::executeGetValue(ExecutionState &state,
     seedMap.find(&state);
   if (it==seedMap.end() || isa<ConstantExpr>(e)) {
     ref<ConstantExpr> value;
-    bool success = solver->getValue(state, e, value);
+    bool success = solver->getValue(*state.parent, e, value);
     assert(success && "FIXME: Unhandled solver failure");
     (void) success;
     bindLocal(target, state, value);
@@ -1208,7 +1215,7 @@ void Executor::executeGetValue(ExecutionState &state,
            siie = it->second.end(); siit != siie; ++siit) {
       ref<ConstantExpr> value;
       bool success = 
-        solver->getValue(state, siit->assignment.evaluate(e), value);
+        solver->getValue(*state.parent, siit->assignment.evaluate(e), value);
       assert(success && "FIXME: Unhandled solver failure");
       (void) success;
       values.insert(value);
@@ -1258,8 +1265,14 @@ void Executor::executeCall(ExecutionState &state,
                            Function *f,
                            std::vector< ref<Expr> > &arguments,
                            std::vector< ref<Expr> > &concrete_arguments) {
+  llvm::errs() << __FILE__ << ":" << __LINE__ << " states " << states.size() << "\n";
   llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << &state
                << " calling function " << f->getName() << "\n";
+
+  if (f->getName().equals("event_del")) {
+    state.debugging = true;
+  }
+
   Instruction *i = ki->inst;
   if (f && f->isDeclaration()) {
     switch(f->getIntrinsicID()) {
@@ -1484,10 +1497,12 @@ void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src,
 
     state.symbolic_branches.pop();
 
-    std::cerr << __FILE__ << ":" << __LINE__ << " state " << &state
-              << " bb " << dst->getName().str()
-              << " popped out a symbolic branch " << ki->inst
-              << std::endl;
+    /*
+     * std::cerr << __FILE__ << ":" << __LINE__ << " state " << &state
+     *           << " bb " << dst->getName().str()
+     *           << " popped out a symbolic branch " << ki->inst
+     *           << std::endl;
+     */
   }
 
   if (state.pc->inst->getOpcode() == Instruction::PHI) {
@@ -1572,9 +1587,9 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
    * }
    */
   Instruction *i = ki->inst;
-  /*
-   * i->dump(); // use -debug-print-instructions to print instructions during execution
-   */
+  if (state.debugging) {
+    i->dump(); // use -debug-print-instructions to print instructions during execution
+  }
   switch (i->getOpcode()) {
     // Control flow
   case Instruction::Ret: {
@@ -1686,10 +1701,13 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
       // fork returns two states means cond is symbolic
       if (branches.first && branches.second) {
         state.symbolic_branches.push(state.prevPC);
-        std::cerr << __FILE__ << ":" << __LINE__ << " state " << &state
-                  << " bb " << state.prevPC->inst->getParent()->getName().str()
-                  << " pushed in a symbolic branch " << state.prevPC->inst
-                  << std::endl;
+        /*
+         * std::cerr
+         *   << __FILE__ << ":" << __LINE__ << " state " << &state
+         *   << " bb " << state.prevPC->inst->getParent()->getName().str()
+         *   << " pushed in a symbolic branch " << state.prevPC->inst
+         *   << std::endl;
+         */
       }
 
       // NOTE: There is a hidden dependency here, markBranchVisited
@@ -1738,7 +1756,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
         ref<Expr> match = EqExpr::create(cond, value);
         isDefault = AndExpr::create(isDefault, Expr::createIsZero(match));
         bool result;
-        bool success = solver->mayBeTrue(state, match, result);
+        bool success = solver->mayBeTrue(*state.parent, match, result);
         assert(success && "FIXME: Unhandled solver failure");
         (void) success;
         if (result) {
@@ -1755,7 +1773,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
         }
       }
       bool res;
-      bool success = solver->mayBeTrue(state, isDefault, res);
+      bool success = solver->mayBeTrue(*state.parent, isDefault, res);
       assert(success && "FIXME: Unhandled solver failure");
       (void) success;
       if (res)
@@ -1874,7 +1892,7 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
          handle it for us, albeit with some overhead. */
       do {
         ref<ConstantExpr> value;
-        bool success = solver->getValue(*free, v, value);
+        bool success = solver->getValue(*free->parent, v, value);
         assert(success && "FIXME: Unhandled solver failure");
         (void) success;
         StatePair res = fork(*free, EqExpr::create(v, value), true);
@@ -2766,6 +2784,12 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 }
 
 void Executor::updateStates(ExecutionState *current) {
+  if (current->debugging) {
+    llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << current << " states " << states.size() << "\n";
+    llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << current << " addedStates " << addedStates.size() << "\n";
+    llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << current << " removedStates " << removedStates.size() << "\n";
+  }
+
   if (searcher) {
     searcher->update(current, addedStates, removedStates);
   }
@@ -3018,12 +3042,12 @@ std::string Executor::getAddressInfo(ExecutionState &state,
     example = CE->getZExtValue();
   } else {
     ref<ConstantExpr> value;
-    bool success = solver->getValue(state, address, value);
+    bool success = solver->getValue(*state.parent, address, value);
     assert(success && "FIXME: Unhandled solver failure");
     (void) success;
     example = value->getZExtValue();
     info << "\texample: " << example << "\n";
-    std::pair< ref<Expr>, ref<Expr> > res = solver->getRange(state, address);
+    std::pair< ref<Expr>, ref<Expr> > res = solver->getRange(*state.parent, address);
     info << "\trange: [" << res.first << ", " << res.second <<"]\n";
   }
   
@@ -3060,7 +3084,7 @@ std::string Executor::getAddressInfo(ExecutionState &state,
 
 void Executor::terminateState(ExecutionState &state) {
   std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
-            << " st " << &state
+            << " state " << &state
             << std::endl;
 
   if (replayOut && replayPosition!=replayOut->numObjects) {
@@ -3069,6 +3093,14 @@ void Executor::terminateState(ExecutionState &state) {
   }
 
   interpreterHandler->incPathsExplored();
+
+  /*
+   * if (state.threadId == 0) {
+   *   for (unsigned i = 1; i < state.threads.size(); ++i) {
+   *     terminateState(*state.threads[i]);
+   *   }
+   * }
+   */
 
   // Remove myself from parent
   state.parent->threads[state.threadId] = NULL;
@@ -3234,7 +3266,7 @@ void Executor::callExternalFunction(ExecutionState &state,
        ae = arguments.end(); ai!=ae; ++ai) {
     if (AllowExternalSymCalls) { // don't bother checking uniqueness
       ref<ConstantExpr> ce;
-      bool success = solver->getValue(state, *ai, ce);
+      bool success = solver->getValue(*state.parent, *ai, ce);
       assert(success && "FIXME: Unhandled solver failure");
       (void) success;
       ce->toMemory(&args[wordIndex]);
@@ -3298,7 +3330,7 @@ void Executor::callExternalFunction(ExecutionState &state,
         // store thread state address in the memory pointed by pthread_t
         executeMemoryOperation(state, true, arguments[0], tid, tid, 0);
 
-        llvm::errs() << "created a thread " << child << " to run "
+        llvm::errs() << "branched a thread " << child << " to run "
                      << f->getName() << "\n";
       }
     } else if (function->getName().equals("pthread_join")) {
@@ -3599,13 +3631,11 @@ void Executor::callExternalFunction(ExecutionState &state,
     // store the return value
     *args = RC;
 
-/*
- *   } else if (function->getName().startswith("event_")) { // libevent
- * 
- *     klee_warning("%s is skipped", function->getName().str().c_str());
- * 
- */
-  } else if (function->getName().equals("__glibc_strerror_r")) {
+  } else if (function->getName().equals("__glibc_strerror_r") ||
+             function->getName().equals("getsockopt") ||
+             function->getName().equals("setsockopt") ||
+             function->getName().equals("__libc_sendmsg") ||
+             function->getName().equals("__libc_recvfrom")) {
     // uclibc's libc/string is skipped for speed
     klee_warning("%s is skipped", function->getName().str().c_str());
 
@@ -3786,11 +3816,11 @@ void Executor::executeAlloc(ExecutionState &state,
     if (fixedSize.second) { 
       // Check for exactly two values
       ref<ConstantExpr> tmp;
-      bool success = solver->getValue(*fixedSize.second, size, tmp);
+      bool success = solver->getValue(*fixedSize.second->parent, size, tmp);
       assert(success && "FIXME: Unhandled solver failure");      
       (void) success;
       bool res;
-      success = solver->mustBeTrue(*fixedSize.second, 
+      success = solver->mustBeTrue(*fixedSize.second->parent, 
                                    EqExpr::create(tmp, size),
                                    res);
       assert(success && "FIXME: Unhandled solver failure");      
@@ -4349,7 +4379,7 @@ bool Executor::getSymbolicSolution(const ExecutionState &state,
         mo->cexPreferences.begin(), pie = mo->cexPreferences.end();
       for (; pi != pie; ++pi) {
         bool mustBeTrue;
-        bool success = solver->mustBeTrue(tmp, Expr::createIsZero(*pi), 
+        bool success = solver->mustBeTrue(*tmp.parent, Expr::createIsZero(*pi), 
                                           mustBeTrue);
         if (!success) break;
         if (!mustBeTrue) tmp.addConstraint(*pi);
@@ -4362,7 +4392,7 @@ bool Executor::getSymbolicSolution(const ExecutionState &state,
   std::vector<const Array*> objects;
   for (unsigned i = 0; i != state.symbolics.size(); ++i)
     objects.push_back(state.symbolics[i].second);
-  bool success = solver->getInitialValues(tmp, objects, values);
+  bool success = solver->getInitialValues(*tmp.parent, objects, values);
   solver->setTimeout(0);
   if (!success) {
     klee_warning("unable to compute initial values (invalid constraints?)!");

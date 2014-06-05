@@ -89,6 +89,9 @@ int pipe(int pipefd[2]) {
   memset(f, 0, sizeof *f);
   f->flags = eOpen;
   f->pipe = p;
+  LIST_INIT(&f->rq);
+  LIST_INIT(&f->wq);
+  
   p->p_fdr = fdr;
 
   for (fdw = 0; fdw < MAX_FDS; ++fdw) {
@@ -103,6 +106,9 @@ int pipe(int pipefd[2]) {
   memset(f, 0, sizeof *f);
   f->flags = eOpen;
   f->pipe = p;
+  LIST_INIT(&f->rq);
+  LIST_INIT(&f->wq);
+  
   p->p_fdw = fdw;
 
   pipefd[0] = fdr;

@@ -195,6 +195,9 @@ int __fd_open(const char *pathname, int flags, mode_t mode) {
   } else { /* XXX What actually happens here if != O_RDWR. */
     f->flags |= eReadable | eWriteable;
   }
+
+  LIST_INIT(&f->rq);
+  LIST_INIT(&f->wq);
   
   return fd;
 }
@@ -249,6 +252,9 @@ int __fd_openat(int basefd, const char *pathname, int flags, mode_t mode) {
   } else { /* XXX What actually happens here if != O_RDWR. */
     f->flags |= eReadable | eWriteable;
   }
+
+  LIST_INIT(&f->rq);
+  LIST_INIT(&f->wq);
 
   return fd;
 }
@@ -389,11 +395,13 @@ ssize_t read(int fd, void *buf, size_t count) {
       return r;
     } else {
       /* pipe */
-      if (fd != ((struct pipe *) f->pipe)->p_fdr) {
+      struct pipe *p = (struct pipe *) f->pipe;
+      if (fd != p->p_fdr) {
         errno = EBADF;
         return -1;
       }
-      return pipe_read(f->pipe, buf, count);
+      __fd_notify_write_listeners(p->p_fdw); /* EV_WRITE */
+      return pipe_read(p, buf, count);
     }
   } else {
     assert(f->off >= 0);
@@ -458,11 +466,13 @@ ssize_t write(int fd, const void *buf, size_t count) {
       return r;
     } else {
       /* pipe */
-      if (fd != ((struct pipe *) f->pipe)->p_fdw) {
+      struct pipe *p = (struct pipe *) f->pipe;
+      if (fd != p->p_fdw) {
         errno = EBADF;
         return -1;
       }
-      return pipe_write(f->pipe, buf, count);
+      __fd_notify_read_listeners(p->p_fdr); /* EV_READ */
+      return pipe_write(p, buf, count);
     }
   } else {
     /* symbolic file */    
@@ -1491,4 +1501,48 @@ int chroot(const char *path) {
   klee_warning("ignoring (ENOENT)");
   errno = ENOENT;
   return -1;
+}
+
+void *__fd_register_read_listener(int fd, void *item, void (*cb)(void *)) {
+  exe_file_t *f = __get_file(fd);
+  struct entry *listener = malloc(sizeof(struct entry));
+  listener->data = item;
+  listener->callback = cb;
+  LIST_INSERT_HEAD(&f->rq, listener, entries);
+  return (void *) listener;
+}
+
+void *__fd_register_write_listener(int fd, void *item, void (*cb)(void *)) {
+  exe_file_t *f = __get_file(fd);
+  struct entry *listener = malloc(sizeof(struct entry));
+  listener->data = item;
+  listener->callback = cb;
+  LIST_INSERT_HEAD(&f->wq, listener, entries);
+  return (void *) listener;
+}
+
+void __fd_cancel_listener(void *listener) {
+  if (listener) {
+    void *tmp = listener;
+    LIST_REMOVE((struct entry *) listener, entries);
+    free(tmp);
+  }
+}
+
+// XXX Called only for PIPE now
+void __fd_notify_read_listeners(int fd) {
+  exe_file_t *f = __get_file(fd);
+  struct entry *i;
+  for (i = f->rq.lh_first; i != NULL; i = i->entries.le_next) {
+    (*i->callback)(i->data);
+  }
+}
+
+// XXX Called only for PIPE now
+void __fd_notify_write_listeners(int fd) {
+  exe_file_t *f = __get_file(fd);
+  struct entry *i;
+  for (i = f->wq.lh_first; i != NULL; i = i->entries.le_next) {
+    (*i->callback)(i->data);
+  }
 }

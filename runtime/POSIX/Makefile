@@ -17,4 +17,6 @@ BYTECODE_LIBRARY=1
 DEBUG_RUNTIME=1
 NO_PEDANTIC=1
 
+C.Flags += -I../../examples/libevent/include
+LD.Flags += -pthread
 include $(LEVEL)/Makefile.common

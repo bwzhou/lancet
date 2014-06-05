@@ -152,11 +152,6 @@ namespace {
            cl::init(false));
     
   cl::opt<bool>
-  WithLIBEVENT("libevent",
-           cl::desc("Link with my own simple implementation of libevent"),
-           cl::init(false));
-    
-  cl::opt<bool>
   OptimizeModule("optimize", 
                  cl::desc("Optimize before execution"),
 		 cl::init(false));
@@ -164,12 +159,12 @@ namespace {
   cl::opt<bool>
   CheckDivZero("check-div-zero", 
                cl::desc("Inject checks for division-by-zero"),
-               cl::init(true));
+               cl::init(false));
 
   cl::opt<bool>
   CheckOvershift("check-overshift",
                cl::desc("Inject checks for overshift"),
-               cl::init(true));
+               cl::init(false));
 
   cl::opt<std::string>
   OutputDir("output-dir", 
@@ -1422,14 +1417,6 @@ int main(int argc, char **argv, char **envp) {
     klee_message("NOTE: Using PAPI: %s", Path.c_str());
     mainModule = klee::linkWithLibrary(mainModule, Path.c_str());
     assert(mainModule && "unable to link with PAPI");
-  }
-
-  if (WithLIBEVENT) {
-    llvm::sys::Path Path(Opts.LibraryDir);
-    Path.appendComponent("libkleeRuntimeLIBEVENT.bca");
-    klee_message("NOTE: Using LIBEVENT: %s", Path.c_str());
-    mainModule = klee::linkWithLibrary(mainModule, Path.c_str());
-    assert(mainModule && "unable to link with LIBEVENT");
   }
 
   // Get the desired main function.  klee_main initializes uClibc

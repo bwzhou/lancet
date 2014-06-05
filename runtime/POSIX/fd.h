@@ -13,6 +13,7 @@
 #ifndef _LARGEFILE64_SOURCE
 #error "_LARGEFILE64_SOURCE should be defined"
 #endif
+#include <sys/queue.h>
 #include <sys/types.h>
 #include <sys/statfs.h>
 #include <dirent.h>
@@ -30,6 +31,13 @@ typedef enum {
   eWriteable    = (1 << 3)
 } exe_file_flag_t;
 
+LIST_HEAD(queue, entry);
+struct entry {
+  void *data;
+  void (*callback)(void *);
+  LIST_ENTRY(entry) entries;
+};
+
 typedef struct {      
   int fd;                   /* actual fd if not symbolic */
   unsigned flags;           /* set of exe_file_flag_t values. fields
@@ -38,6 +46,8 @@ typedef struct {
   off64_t off;              /* offset */
   exe_disk_file_t* dfile;   /* ptr to file on disk, if symbolic */
   void *pipe;               /* ptr to pipe, NULL for regular file */
+  struct queue rq;          /* event base queue for readers */
+  struct queue wq;          /* event base queue for writers */
 } exe_file_t;
 
 typedef struct {
@@ -90,5 +100,10 @@ int __fd_fstat(int fd, struct stat64 *buf);
 int __fd_ftruncate(int fd, off64_t length);
 int __fd_statfs(const char *path, struct statfs *buf);
 int __fd_getdents(unsigned int fd, struct dirent64 *dirp, unsigned int count);
+void *__fd_register_read_listener(int fd, void *item, void (*cb)(void *));
+void *__fd_register_write_listener(int fd, void *item, void (*cb)(void *));
+void __fd_cancel_listener(void *listener);
+void __fd_notify_read_listeners(int fd);
+void __fd_notify_write_listeners(int fd);
 
 #endif /* __EXE_FD__ */

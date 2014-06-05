@@ -80,7 +80,8 @@ ExecutionState::ExecutionState(KFunction *kf)
     loopBB(0),
     loopTotalCount(0),
     parent(this),
-    blocked(false)
+    blocked(false),
+    debugging(false)
 {
   pushFrame(0, kf);
   threadId = 0;
@@ -96,7 +97,8 @@ ExecutionState::ExecutionState(const std::vector<ref<Expr> > &assumptions)
     loopBB(0),
     loopTotalCount(0),
     parent(this),
-    blocked(false)
+    blocked(false),
+    debugging(false)
 {
   threadId = 0;
   threads.push_back(this);
@@ -148,15 +150,19 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     blocked(state.blocked),
     waitQueues(state.waitQueues), /* clone state has the same keys for queues */
     unblockedThreads(state.unblockedThreads),
-    tsd(state.tsd)
+    lockSet(state.lockSet),
+    lockOwner(state.lockOwner),
+    mutexOfCond(state.mutexOfCond),
+    tsd(state.tsd),
+    debugging(state.debugging)
 {
   assert(state.parent == &state); // should only be called by a parent thread
   threadId = 0;
   threads.push_back(this);
 
-  for (std::vector<ExecutionState*>::const_iterator I = state.threads.begin(),
-      E = state.threads.end(); I != E; ++I) {
-    threads.push_back(*I != NULL ? new ExecutionState(**I, this) : NULL);
+  // Fix: don't copy the parent for twice
+  for (unsigned i = 1; i < state.threads.size(); ++i) {
+    threads.push_back(state.threads[i] ? new ExecutionState(*state.threads[i], this) : NULL);
   }
 
   for (unsigned int i=0; i<symbolics.size(); i++)
@@ -182,7 +188,7 @@ ExecutionState::ExecutionState(const ExecutionState& state, ExecutionState *p)
     //coveredNew(state.coveredNew),
     //forkDisabled(state.forkDisabled),
     //coveredLines(state.coveredLines),
-    //ptreeNode(state.ptreeNode),
+    ptreeNode(state.ptreeNode), // always 0 for children
     //symbolics(state.symbolics),
     //arrayNames(state.arrayNames),
     //shadowObjects(state.shadowObjects),
@@ -192,23 +198,31 @@ ExecutionState::ExecutionState(const ExecutionState& state, ExecutionState *p)
     //symbolic_branches(state.symbolic_branches),
     parent(p),
     blocked(state.blocked),
-    unblockedThreads(state.unblockedThreads)
+    unblockedThreads(state.unblockedThreads),
+    lockSet(state.lockSet), // Fix: every thread has its own set of locks
+    debugging(state.debugging)
 {
   threads.push_back(this);
   threadId = parent->threads.size();
 }
 
 ExecutionState *ExecutionState::branch() {
+
+  llvm::errs()
+    << __FILE__ << ":" << __LINE__ << " state " << this
+    << " branches " << parent->threads.size() << " states"
+    << "\n";
+
   depth++;
 
-  ExecutionState *falseState = new ExecutionState(*this->parent);
+  ExecutionState *falseState = new ExecutionState(*parent);
   falseState->coveredNew = false;
   falseState->coveredLines.clear();
 
   weight *= .5;
   falseState->weight -= weight;
 
-  return falseState->threads[this->threadId];
+  return falseState->threads[threadId];
 }
 
 void ExecutionState::pushFrame(KInstIterator caller, KFunction *kf) {
