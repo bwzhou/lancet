@@ -192,7 +192,7 @@ ExecutionState::ExecutionState(const ExecutionState& state, ExecutionState *p)
     //symbolics(state.symbolics),
     //arrayNames(state.arrayNames),
     //shadowObjects(state.shadowObjects),
-    //incomingBBIndex(state.incomingBBIndex),
+    incomingBBIndex(state.incomingBBIndex), // Fix: PHINode needs this to be sane
     //loopBB(state.loopBB),
     //loopTotalCount(state.loopTotalCount),
     //symbolic_branches(state.symbolic_branches),

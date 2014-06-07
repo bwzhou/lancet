@@ -1131,7 +1131,16 @@ void Executor::bindLocal(KInstruction *target, ExecutionState &state,
 
 void Executor::bindLocalConcrete(KInstruction *target, ExecutionState &state, 
                                  ref<Expr> value) {
-  assert(isa<ConstantExpr>(value) && "not a constant expression");
+  if (!isa<ConstantExpr>(value)) {
+    std::cerr
+      << __FILE__ << ":" << __LINE__ << " " << __func__
+      << " state " << &state << " ERROR: bind symbolic to concrete variable"
+      << std::endl;
+  }
+  // Fix: bind symbolic value when concrete is not available
+  // TODO: figure out what cause single-resolution read of symbolic address
+  //       in executeMemoryOperation
+  // assert(isa<ConstantExpr>(value) && "not a constant expression");
   getDestCell(state, target).concrete_value = value;
 }
 
@@ -1142,7 +1151,16 @@ void Executor::bindArgument(KFunction *kf, unsigned index,
 
 void Executor::bindArgumentConcrete(KFunction *kf, unsigned index, 
                                     ExecutionState &state, ref<Expr> value) {
-  assert(isa<ConstantExpr>(value) && "not a constant expression");
+  if (!isa<ConstantExpr>(value)) {
+    std::cerr
+      << __FILE__ << ":" << __LINE__ << " " << __func__
+      << " state " << &state << " ERROR: bind symbolic to concrete variable"
+      << std::endl;
+  }
+  // Fix: bind symbolic value when concrete is not available
+  // TODO: figure out what cause single-resolution read of symbolic address
+  //       in executeMemoryOperation
+  // assert(isa<ConstantExpr>(value) && "not a constant expression");
   getArgumentCell(state, kf, index).concrete_value = value;
 }
 
@@ -3953,11 +3971,24 @@ void Executor::executeMemoryOperation(ExecutionState &state,
       value = parent.constraints.simplifyExpr(value);
   }
 
-  // fast path: single in-bounds resolution
+  // fast path: single memory object in-bounds resolution
   ObjectPair op;
   bool success;
   solver->setTimeout(coreSolverTimeout);
   if (!parent.addressSpace.resolveOne(parent, solver, address, op, success)) {
+
+    /*
+     * std::cerr
+     *   << __FILE__ << ":" << __LINE__
+     *   << " state:" << &state
+     *   << " parent:" << state.parent
+     *   << (isWrite ? " W" : " R")
+     *   << " address:" << address
+     *   << " bytes:" << bytes
+     *   << " resolveOne failure"
+     *   << std::endl;
+     */
+
     address = toConstant(parent, address, "resolveOne failure");
     success = parent.addressSpace.resolveOne(cast<ConstantExpr>(address), op);
   }
@@ -3969,10 +4000,10 @@ void Executor::executeMemoryOperation(ExecutionState &state,
    *   << " state:" << &state
    *   << " parent:" << state.parent
    *   << (isWrite ? " W" : " R")
-   *   << " address:" << (void *) cast<ConstantExpr>(address)->getZExtValue()
+   *   << " address:" << address
    *   << " bytes:" << bytes
-   *   << " fast-path-success:" << success
-   *   << "\n";
+   *   << " fast-path:" << success
+   *   << std::endl;
    */
 
   if (success) {
@@ -3993,13 +4024,13 @@ void Executor::executeMemoryOperation(ExecutionState &state,
      * std::cerr
      *   << __FILE__ << ":" << __LINE__
      *   << " state:" << &state
+     *   << " offset:" << offset
      *   << " base:" << (void *) mo->address
      *   << " size:" << mo->size
-     *   << " offset:" << offset
      *   << " bytes:" << bytes
      *   << " check:" << mo->getBoundsCheckOffset(offset, bytes)
-     *   << " result:" << inBounds
-     *   << "\n";
+     *   << " inBounds:" << inBounds
+     *   << std::endl;
      */
 
     solver->setTimeout(0);
@@ -4032,21 +4063,13 @@ void Executor::executeMemoryOperation(ExecutionState &state,
     }
   }
 
-  /*
-   * std::cerr
-   *   << __FILE__ << ":" << __LINE__
-   *   << " state:" << &state
-   *   << " on-error-path"
-   *   << "\n";
-   */
-
-  // we are on an error path (no resolution, multiple resolution, one
+  // we are on an error path (no resolution, multiple objects resolution, one
   // resolution with out of bounds)
   
   ResolutionList rl;  
   solver->setTimeout(coreSolverTimeout);
   bool incomplete = parent.addressSpace.resolve(parent, solver, address, rl,
-                                               0, coreSolverTimeout);
+                                                0, coreSolverTimeout);
   solver->setTimeout(0);
   
   // XXX there is some query wasteage here. who cares?
@@ -4058,6 +4081,12 @@ void Executor::executeMemoryOperation(ExecutionState &state,
     ref<Expr> inBounds = mo->getBoundsCheckPointer(address, bytes);
     ref<Expr> offset = mo->getOffsetExpr(address);
     
+    std::cerr
+      << __FILE__ << ":" << __LINE__
+      << " state:" << &state << " on-error-path "
+      << " offset:" << offset
+      << std::endl;
+
     StatePair branches = fork(*unbound, inBounds, true);
     ExecutionState *bound = branches.first;
 

@@ -11,9 +11,11 @@ shift
 #shift
 
 ARG=$@
+
+OPTIONS="-simplify-sym-indices -allow-external-sym-calls -max-instruction-time=30. -max-memory-inhibit=false -use-batching-search -batch-instructions=10000 -libc=uclibc -posix-runtime"
 #CMD="time $ROOT/Release+Asserts/bin/klee -use-concrete-explorer -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
 #CMD="time $ROOT/Debug+Asserts/bin/klee -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
 #CMD="time $ROOT/Debug+Asserts/bin/klee -use-thread-search -libc=uclibc -posix-runtime -load=$ROOT/examples/libevent/lib/libevent.so $BC $ARG 2>$LOG"
-CMD="time $ROOT/Debug+Asserts/bin/klee -use-thread-search -libc=uclibc -posix-runtime $BC $ARG >$LOG 2>&1"
+CMD="time $ROOT/Debug+Asserts/bin/klee $OPTIONS -use-thread-search $BC $ARG >$LOG 2>&1"
 echo $CMD
 eval $CMD
