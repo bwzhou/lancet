@@ -671,15 +671,17 @@ void Executor::branch(ExecutionState &state,
     for (unsigned i=1; i<N; ++i) {
       ExecutionState *es = result[theRNG.getInt32() % i];
       ExecutionState *ns = es->branch();
-      addedStates.insert(ns->parent->threads.begin(),
+      addedStates.insert(
+          ns->parent->threads.begin(),
           ns->parent->threads.end());
       result.push_back(ns);
-      if (es->ptreeNode) {
-        es->ptreeNode->data = 0;
+      if (es->parent->ptreeNode) { // Fix: only parent has ptreeNode
+        es->parent->ptreeNode->data = 0;
         std::pair<PTree::Node*,PTree::Node*> res = 
-          processTree->split(es->ptreeNode, ns, es);
-        ns->ptreeNode = res.first;
-        es->ptreeNode = res.second;
+          processTree->split(es->parent->ptreeNode,
+              ns->parent, es->parent);
+        ns->parent->ptreeNode = res.first;
+        es->parent->ptreeNode = res.second;
       }
     }
   }
@@ -771,13 +773,15 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
     }
   }
 
-  if (!dyn_cast<ConstantExpr>(condition)) {
-    std::cerr << __FILE__ << ":" << __LINE__ << " state " << &current
-              << " fork condition:"
-              << std::endl
-              << condition
-              << std::endl;
-  }
+  /*
+   * if (!dyn_cast<ConstantExpr>(condition)) {
+   *   std::cerr << __FILE__ << ":" << __LINE__ << " state " << &current
+   *             << " fork condition:"
+   *             << std::endl
+   *             << condition
+   *             << std::endl;
+   * }
+   */
   double timeout = coreSolverTimeout;
   if (isSeeding)
     timeout *= it->second.size();
@@ -958,12 +962,13 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
     }
 
     if (!UseConcreteExplorer) {
-      if (current.ptreeNode) {
-        current.ptreeNode->data = 0;
+      if (current.parent->ptreeNode) { // Fix: only parent has ptreeNode
+        current.parent->ptreeNode->data = 0;
         std::pair<PTree::Node*, PTree::Node*> res =
-          processTree->split(current.ptreeNode, falseState, trueState);
-        falseState->ptreeNode = res.first;
-        trueState->ptreeNode = res.second;
+          processTree->split(current.parent->ptreeNode,
+              falseState->parent, trueState->parent);
+        falseState->parent->ptreeNode = res.first;
+        trueState->parent->ptreeNode = res.second;
       }
     }
 
@@ -1134,7 +1139,7 @@ void Executor::bindLocalConcrete(KInstruction *target, ExecutionState &state,
   if (!isa<ConstantExpr>(value)) {
     std::cerr
       << __FILE__ << ":" << __LINE__ << " " << __func__
-      << " state " << &state << " ERROR: bind symbolic to concrete variable"
+      << " state " << &state << " bind symbolic to concrete variable"
       << std::endl;
   }
   // Fix: bind symbolic value when concrete is not available
@@ -1605,9 +1610,11 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
    * }
    */
   Instruction *i = ki->inst;
-  if (state.debugging) {
-    i->dump(); // use -debug-print-instructions to print instructions during execution
-  }
+  /*
+   * if (state.debugging) {
+   *   i->dump(); // use -debug-print-instructions to print instructions during execution
+   * }
+   */
   switch (i->getOpcode()) {
     // Control flow
   case Instruction::Ret: {
@@ -2802,11 +2809,17 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
 }
 
 void Executor::updateStates(ExecutionState *current) {
-  if (current->debugging) {
-    llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << current << " states " << states.size() << "\n";
-    llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << current << " addedStates " << addedStates.size() << "\n";
-    llvm::errs() << __FILE__ << ":" << __LINE__ << " state " << current << " removedStates " << removedStates.size() << "\n";
+  if (removedStates.size() > 0) {
+    llvm::errs()
+      << __FILE__ << ":" << __LINE__ << " state " << current
+      << " states " << states.size()
+      << " addedStates " << addedStates.size()
+      << " removedStates " << removedStates.size()
+      << "\n";
   }
+
+  // Fix: ExecutionState::branche may copy zerod child thread states
+  addedStates.erase(0);
 
   if (searcher) {
     searcher->update(current, addedStates, removedStates);
@@ -2828,6 +2841,8 @@ void Executor::updateStates(ExecutionState *current) {
       seedMap.erase(it3);
     if (es->ptreeNode)
       processTree->remove(es->ptreeNode);
+    if (es->parent)
+      es->parent->threads[es->threadId] = NULL;
     delete es;
   }
   removedStates.clear();
@@ -2984,52 +2999,57 @@ void Executor::run(ExecutionState &initialState) {
      */
 
     ExecutionState &state = searcher->selectState();
+    
+    if (state.parent) {
+      KInstruction *ki = state.pc;
+      stepInstruction(state);
+      executeInstruction(state, ki);
 
-    KInstruction *ki = state.pc;
-    stepInstruction(state);
-    executeInstruction(state, ki);
+      processTimers(&state, MaxInstructionTime);
 
-    processTimers(&state, MaxInstructionTime);
-
-    if (MaxMemory) {
-      if ((stats::instructions & 0xFFFF) == 0) {
-        // We need to avoid calling GetMallocUsage() often because it
-        // is O(elts on freelist). This is really bad since we start
-        // to pummel the freelist once we hit the memory cap.
+      if (MaxMemory) {
+        if ((stats::instructions & 0xFFFF) == 0) {
+          // We need to avoid calling GetMallocUsage() often because it
+          // is O(elts on freelist). This is really bad since we start
+          // to pummel the freelist once we hit the memory cap.
 #if LLVM_VERSION_CODE >= LLVM_VERSION(3, 3)
-        unsigned mbs = sys::Process::GetMallocUsage() >> 20;
+          unsigned mbs = sys::Process::GetMallocUsage() >> 20;
 #else
-        unsigned mbs = sys::Process::GetTotalMemoryUsage() >> 20;
+          unsigned mbs = sys::Process::GetTotalMemoryUsage() >> 20;
 #endif
-        if (mbs > MaxMemory) {
-          if (mbs > MaxMemory + 100) {
-            // just guess at how many to kill
-            unsigned numStates = states.size();
-            unsigned toKill = std::max(1U, numStates - numStates*MaxMemory/mbs);
+          if (mbs > MaxMemory) {
+            if (mbs > MaxMemory + 100) {
+              // just guess at how many to kill
+              unsigned numStates = states.size();
+              unsigned toKill = std::max(1U, numStates - numStates*MaxMemory/mbs);
 
-            if (MaxMemoryInhibit)
-              klee_warning("killing %d states (over memory cap)",
-                           toKill);
+              if (MaxMemoryInhibit)
+                klee_warning("killing %d states (over memory cap)",
+                             toKill);
 
-            std::vector<ExecutionState*> arr(states.begin(), states.end());
-            for (unsigned i=0,N=arr.size(); N && i<toKill; ++i,--N) {
-              unsigned idx = rand() % N;
+              std::vector<ExecutionState*> arr(states.begin(), states.end());
+              for (unsigned i=0,N=arr.size(); N && i<toKill; ++i,--N) {
+                unsigned idx = rand() % N;
 
-              // Make two pulls to try and not hit a state that
-              // covered new code.
-              if (arr[idx]->coveredNew)
-                idx = rand() % N;
+                // Make two pulls to try and not hit a state that
+                // covered new code.
+                if (arr[idx]->coveredNew)
+                  idx = rand() % N;
 
-              std::swap(arr[idx], arr[N-1]);
-              terminateStateEarly(*arr[N-1], "Memory limit exceeded.");
+                std::swap(arr[idx], arr[N-1]);
+                terminateStateEarly(*arr[N-1], "Memory limit exceeded.");
+              }
             }
+            atMemoryLimit = true;
+          } else {
+            atMemoryLimit = false;
           }
-          atMemoryLimit = true;
-        } else {
-          atMemoryLimit = false;
         }
       }
     }
+
+    if (state.parent == NULL)
+      terminateStateEarly(state, "parent exited");
 
     updateStates(&state);
   }
@@ -3102,9 +3122,12 @@ std::string Executor::getAddressInfo(ExecutionState &state,
 
 void Executor::terminateState(ExecutionState &state) {
   std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
-            << " state " << &state << " threads";
-  for (unsigned i = 0; i < state.parent->threads.size(); ++i) {
-    std::cerr << " " << state.parent->threads[i];
+            << " state " << &state;
+  if (state.parent) {
+    std::cerr << " threads";
+    for (unsigned i = 0; i < state.parent->threads.size(); ++i) {
+      std::cerr << " " << state.parent->threads[i];
+    }
   }
   std::cerr << std::endl;
 
@@ -3115,23 +3138,43 @@ void Executor::terminateState(ExecutionState &state) {
 
   interpreterHandler->incPathsExplored();
 
+  // Remove myself from parent
   /*
-   * if (state.threadId == 0) {
-   *   for (unsigned i = 1; i < state.threads.size(); ++i) {
-   *     terminateState(*state.threads[i]);
-   *   }
-   * }
+   * if (state.parent)
+   *   state.parent->threads[state.threadId] = NULL;
    */
 
-  // Remove myself from parent
-  state.parent->threads[state.threadId] = NULL;
+  // Terminate all children
+  if (state.threadId == 0) {
+    for (unsigned i = 1; i < state.threads.size(); ++i) {
+      if (ExecutionState *child = state.threads[i]) {
+        // Empty the stack before parent exits
+        // and invalidates address space
+        while (!child->stack.empty()) child->popFrame();
+        child->parent = NULL;
+        state.threads[i] = NULL;
+        /*
+         * Fix: Do not terminate the child here
+         *
+         * When MaxMemory is reached all states are serialized into a vector
+         * and the first N states in the vector are terminated to release
+         * memory. A child state terminated here may still be terminted again
+         * in Executor::run() should it be one of the first N states in the
+         * vector.
+         */
+        /* terminateStateEarly(*child, "parent exiting"); */
+      }
+    }
+  }
 
   std::set<ExecutionState*>::iterator it = addedStates.find(&state);
   if (it==addedStates.end()) {
+    llvm::errs() << __FILE__ << ":" << __LINE__ << " " << &state << "\n";
     state.pc = state.prevPC;
 
     removedStates.insert(&state);
   } else {
+    llvm::errs() << __FILE__ << ":" << __LINE__ << " " << &state << "\n";
     // never reached searcher, just delete immediately
     std::map< ExecutionState*, std::vector<SeedInfo> >::iterator it3 = 
       seedMap.find(&state);
@@ -3140,6 +3183,8 @@ void Executor::terminateState(ExecutionState &state) {
     addedStates.erase(it);
     if (state.ptreeNode)
       processTree->remove(state.ptreeNode);
+    if (state.parent)
+      state.parent->threads[state.threadId] = NULL;
     delete &state;
   }
 }
@@ -3148,6 +3193,7 @@ void Executor::terminateStateEarly(ExecutionState &state,
                                    const Twine &message) {
   std::cerr << __FILE__ << ":" << __LINE__ << ":" << __func__
             << " st " << &state
+            << " msg " << message.str()
             << std::endl;
 
   if (!OnlyOutputStatesCoveringNew || state.coveredNew ||
@@ -3351,8 +3397,11 @@ void Executor::callExternalFunction(ExecutionState &state,
         // store thread state address in the memory pointed by pthread_t
         executeMemoryOperation(state, true, arguments[0], tid, tid, 0);
 
-        llvm::errs() << "branched a thread " << child << " to run "
-                     << f->getName() << "\n";
+        llvm::errs() 
+          << __FILE__ << ":" << __LINE__ << " state " << &state
+          << " branched a new state " << child
+          << " to run " << f->getName()
+          << "\n";
       }
     } else if (function->getName().equals("pthread_join")) {
     /*
@@ -3386,6 +3435,7 @@ void Executor::callExternalFunction(ExecutionState &state,
         }
         Q.clear();
       }
+      terminateStateOnExit(state);
     } else if (function->getName().equals("pthread_self")) {
       /*
        * pthread_t pthread_self(void);

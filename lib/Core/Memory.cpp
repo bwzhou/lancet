@@ -440,10 +440,11 @@ void ObjectState::write8(unsigned offset, ref<Expr> value,
     markByteUnflushed(offset);
 
     // Tracking concrete_value for symbolic value
-    assert(!concrete_value.isNull() && "concrete_value is null");
-    ConstantExpr *CV = dyn_cast<ConstantExpr>(concrete_value);
-    assert(CV && "concrete_value is not constant");
-    concreteStore[offset] = (uint8_t) CV->getZExtValue(8);
+    // Fix: concrete_value can contain non-concrete value
+    if (ConstantExpr *CV = dyn_cast<ConstantExpr>(concrete_value)) {
+      concreteStore[offset] = (uint8_t) CV->getZExtValue(8);
+      // Fix: don't marking the byte concrete here
+    }
   }
 }
 

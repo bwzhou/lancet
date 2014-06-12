@@ -1,4 +1,5 @@
 //===- DiscretePDF.inc - --*- C++ -*-===//
+#include <iostream>
 
 //
 
@@ -71,6 +72,7 @@ bool DiscretePDF<T>::empty() const {
 
 template <class T>
 void DiscretePDF<T>::insert(T item, weight_type weight) {
+  std::cerr << "DiscretePDF " << __func__ << " " << (void *) item << std::endl;
   Node *p=0, *n=m_root;
 
   while (n) {
@@ -104,6 +106,7 @@ void DiscretePDF<T>::insert(T item, weight_type weight) {
 
 template <class T>
 void DiscretePDF<T>::remove(T item) {
+  std::cerr << "DiscretePDF " << __func__ << " " << (void *) item << std::endl;
   Node **np = lookup(item, 0);
   Node *child, *n = *np;
 

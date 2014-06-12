@@ -31,10 +31,20 @@ PTree::split(Node *n,
   assert(n && !n->left && !n->right);
   n->left = new Node(n, leftData);
   n->right = new Node(n, rightData);
+  std::cerr
+    << __FILE__ << ":" << __LINE__ << " state " << n->data
+    << " PTree split " << n
+    << " left " << n->left
+    << " right " << n->right
+    << std::endl;
   return std::make_pair(n->left, n->right);
 }
 
 void PTree::remove(Node *n) {
+  std::cerr
+    << __FILE__ << ":" << __LINE__ << " state " << n->data
+    << " PTree remove " << n
+    << std::endl;
   assert(!n->left && !n->right);
   do {
     Node *p = n->parent;

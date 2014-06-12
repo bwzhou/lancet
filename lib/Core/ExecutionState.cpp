@@ -147,6 +147,7 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     loopTotalCount(state.loopTotalCount),
     symbolic_branches(state.symbolic_branches),
     parent(this),
+    threadId(state.threadId),
     blocked(state.blocked),
     waitQueues(state.waitQueues), /* clone state has the same keys for queues */
     unblockedThreads(state.unblockedThreads),
@@ -156,8 +157,8 @@ ExecutionState::ExecutionState(const ExecutionState& state)
     tsd(state.tsd),
     debugging(state.debugging)
 {
-  assert(state.parent == &state); // should only be called by a parent thread
-  threadId = 0;
+  assert(state.parent == &state); // should only copy a parent thread
+  assert(state.threadId == 0);
   threads.push_back(this);
 
   // Fix: don't copy the parent for twice
@@ -167,26 +168,31 @@ ExecutionState::ExecutionState(const ExecutionState& state)
 
   for (unsigned int i=0; i<symbolics.size(); i++)
     symbolics[i].first->refCount++;
+
+  llvm::errs()
+    << __FILE__ << ":" << __LINE__
+    << " copied " << &state << " to " << this
+    << "\n";
 }
 
 // copy thread state
 ExecutionState::ExecutionState(const ExecutionState& state, ExecutionState *p)
   : //fnAliases(state.fnAliases),
-    //fakeState(state.fakeState),
-    //underConstrained(state.underConstrained),
-    //depth(state.depth),
+    fakeState(state.fakeState),
+    underConstrained(state.underConstrained),
+    depth(state.depth),
     pc(state.pc),
     prevPC(state.prevPC),
     stack(state.stack),
     //constraints(state.constraints),
-    //queryCost(state.queryCost),
-    //weight(state.weight),
+    queryCost(state.queryCost),
+    weight(state.weight),
     //addressSpace(state.addressSpace),
     //pathOS(state.pathOS),
     //symPathOS(state.symPathOS),
-    //instsSinceCovNew(state.instsSinceCovNew),
-    //coveredNew(state.coveredNew),
-    //forkDisabled(state.forkDisabled),
+    instsSinceCovNew(state.instsSinceCovNew),
+    coveredNew(state.coveredNew),
+    forkDisabled(state.forkDisabled),
     //coveredLines(state.coveredLines),
     ptreeNode(state.ptreeNode), // always 0 for children
     //symbolics(state.symbolics),
@@ -197,17 +203,24 @@ ExecutionState::ExecutionState(const ExecutionState& state, ExecutionState *p)
     //loopTotalCount(state.loopTotalCount),
     //symbolic_branches(state.symbolic_branches),
     parent(p),
+    threadId(state.threadId), // Fix: threadId should be the same as the
+                              //      original thread, otherwise the thread IDs
+                              //      in waitqueue would be invalid
     blocked(state.blocked),
     unblockedThreads(state.unblockedThreads),
     lockSet(state.lockSet), // Fix: every thread has its own set of locks
     debugging(state.debugging)
 {
+  assert(state.ptreeNode == 0);
   threads.push_back(this);
-  threadId = parent->threads.size();
+
+  llvm::errs()
+    << __FILE__ << ":" << __LINE__
+    << " copied " << &state << " to " << this
+    << "\n";
 }
 
 ExecutionState *ExecutionState::branch() {
-
   llvm::errs()
     << __FILE__ << ":" << __LINE__ << " state " << this
     << " branches " << parent->threads.size() << " states"

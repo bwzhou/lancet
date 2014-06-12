@@ -1,4 +1,5 @@
 #!/bin/bash
+ulimit -s unlimited
 ROOT=$(dirname $0)/..
 BC=$1
 LOG=$2

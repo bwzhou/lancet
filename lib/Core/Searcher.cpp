@@ -236,6 +236,8 @@ double WeightedRandomSearcher::getWeight(ExecutionState *es) {
 void WeightedRandomSearcher::update(ExecutionState *current,
                                     const std::set<ExecutionState*> &addedStates,
                                     const std::set<ExecutionState*> &removedStates) {
+  // bool DebugPrint = removedStates.find(current) != removedStates.end();
+  // llvm::errs() << __FILE__ << ":" << __LINE__ << " " << DebugPrint << "\n";
   if (current && updateWeights && !removedStates.count(current))
     states->update(current, getWeight(current));
   
@@ -540,6 +542,8 @@ ExecutionState &BatchingSearcher::selectState() {
 void BatchingSearcher::update(ExecutionState *current,
                               const std::set<ExecutionState*> &addedStates,
                               const std::set<ExecutionState*> &removedStates) {
+  // bool DebugPrint = removedStates.find(current) != removedStates.end();
+  // llvm::errs() << __FILE__ << ":" << __LINE__ << " " << DebugPrint << "\n";
   if (removedStates.count(lastState))
     lastState = 0;
   baseSearcher->update(current, addedStates, removedStates);
@@ -819,18 +823,30 @@ ExecutionState &ThreadSearcher::selectState() {
 void ThreadSearcher::update(ExecutionState *current,
                             const std::set<ExecutionState*> &addedStates,
                             const std::set<ExecutionState*> &removedStates) {
-  if (!removedStates.empty()) {
-    std::set<ExecutionState *> alt = removedStates;
-    for (std::set<ExecutionState*>::const_iterator it = removedStates.begin(),
-           ie = removedStates.end(); it != ie; ++it) {
-      ExecutionState *es = *it;
-      std::set<ExecutionState*>::const_iterator it2 = blockedStates.find(es);
-      if (it2 != blockedStates.end()) {
-        blockedStates.erase(it);
-        alt.erase(alt.find(es));
+  // bool DebugPrint = removedStates.find(current) != removedStates.end();
+  // llvm::errs() << __FILE__ << ":" << __LINE__ << " " << DebugPrint << "\n";
+  if (!addedStates.empty() || !removedStates.empty()) {
+    // Fix: hide the already blocked states in my own stash
+    std::set<ExecutionState *> A = addedStates;
+    for (std::set<ExecutionState*>::const_iterator it = addedStates.begin(),
+         ie = addedStates.end(); it != ie; ++it) {
+      if ((*it)->blocked) {
+        llvm::errs() << __FILE__ << ":" << __LINE__ << " added blocked state " << *it << "\n";
+        blockedStates.insert(*it);
+        A.erase(*it);
       }
     }
-    baseSearcher->update(current, addedStates, alt);
+    std::set<ExecutionState *> R = removedStates;
+    for (std::set<ExecutionState*>::const_iterator it = removedStates.begin(),
+         ie = removedStates.end(); it != ie; ++it) {
+      // Fix: ONLY skip removing those blocked states
+      if (blockedStates.find(*it) != blockedStates.end()) {
+        llvm::errs() << __FILE__ << ":" << __LINE__ << " removed blocked state " << *it << "\n";
+        blockedStates.erase(*it);
+        R.erase(*it);
+      }
+    }
+    baseSearcher->update(current, A, R);
   } else {
     baseSearcher->update(current, addedStates, removedStates);
   }
@@ -840,6 +856,13 @@ void ThreadSearcher::update(ExecutionState *current,
       blockedStates.insert(current);
       baseSearcher->removeState(current);
     }
+
+    /*
+     * std::cerr
+     *   << __FILE__ << ":" << __LINE__ << ":" << current
+     *   << " current->blocked " << current->blocked
+     *   << std::endl;
+     */
 
     std::set<ExecutionState*> unblockedStates;
     for (std::vector<int>::iterator it = current->unblockedThreads.begin(),
