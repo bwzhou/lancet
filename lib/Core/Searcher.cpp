@@ -52,14 +52,6 @@ namespace {
   DebugLogMerge("debug-log-merge");
 }
 
-cl::opt<unsigned>
-LoopMinCount("loop-min-count",
-             cl::init(1));
-
-cl::opt<unsigned>
-LoopMaxCount("loop-max-count",
-             cl::init(100));
-
 namespace klee {
   extern RNG theRNG;
 }
@@ -640,108 +632,53 @@ LoopSearcher::~LoopSearcher() {
 
 ExecutionState &LoopSearcher::selectState() {
   if (!rollerStateStack.empty()) {
-    ExecutionState *state = rollerStateStack.back();
-    rollerStateStack.pop_back();
-    return *state;
+    return *rollerStateStack.front();
   }
   return baseSearcher->selectState();
 }
 
-static bool loopContains(const Loop *L,
-                         const BasicBlock *B,
-                         const LoopInfoBase<BasicBlock, Loop> *LIB) {
-  return L == LIB->getLoopFor(B);
-}
-
-/*
-static bool loopDominates(const Loop *L,
-                          const BasicBlock *B,
-                          const LoopInfoBase<BasicBlock, Loop> *LIB) {
-  Loop *loop = LIB->getLoopFor(B);
-  while (loop) {
-    if (L == loop)
-      return true;
-    loop = loop->getParentLoop();
-  }
-  return false;
-}
-*/
-
 // TODO need to incorporate loop nested in function calls
+// TODO Pursue all rollers until they exit the current function
 void LoopSearcher::update(ExecutionState *current,
                           const std::set<ExecutionState*> &addedStates,
                           const std::set<ExecutionState*> &removedStates) {
-  if (current && executor.seedMap.find(current) == executor.seedMap.end()) {
-    // Handles branch instruction
-    if (current->prevPC->inst->getOpcode() == Instruction::Br) {
-      bool terminated = false;
-      if (current->loopBB) {
-        BasicBlock *src = current->prevPC->inst->getParent();
-        BasicBlock *dst = current->pc->inst->getParent();
-        LoopInfoBase<BasicBlock, Loop> *LIB =
-          executor.kmodule->loopInfoBaseMap[dst->getParent()];
-
-        // Make sure we start from OR stop at the same loop as loopBB
-        if (loopContains(current->loopBB, src, LIB) ||
-            loopContains(current->loopBB, dst, LIB)) {
-
-          if (current->loopBB->getHeader() == dst) {
-            // Case 1: roller jumps to loop header
-
-            llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__
-                         << " state " << current
-                         << " loop " << current->loopBB
-                         << " total " << current->loopTotalCount
-                         << " src " << src->getName()
-                         << " depth " << LIB->getLoopDepth(src)
-                         << " dst " << dst->getName()
-                         << " depth " << LIB->getLoopDepth(dst)
-                         << "\n";
-
-            if (loopContains(current->loopBB, src, LIB)) {
-              
-                ++current->loopTotalCount;
-                if (current->loopTotalCount > LoopMaxCount) {
-                  // By allowing the state to iterate one more round than the
-                  // target number of iterations, the forked state in the last
-                  // iteration would have reached the exact target number when
-                  // exiting the loop.
-                  terminated = true;
-                }
-                // Back edge must be an unconditional jump
-                assert(addedStates.empty());
-            } else {
-              // Handle the just transformed roller
-            }
-          }
-        }
-      }
-
-      // Pursue all rollers until they exit the current function
-      for (std::set<ExecutionState*>::iterator it = addedStates.begin(),
-           ie = addedStates.end(); it != ie; ++it) {
-        if ((*it)->loopBB) {
-          rollerStateStack.push_back(*it);
-        }
-      }
-      if (current->loopBB && !terminated && !removedStates.count(current)) {
-        rollerStateStack.push_back(current);
-      }
-      if (terminated) {
-        executor.terminateState(*current);
-      }
-
+  bool currentIsRoller = rollerStateStack.has(current);
+  // Add new rollers
+  std::set<ExecutionState*> A;
+  for (std::set<ExecutionState*>::iterator it = addedStates.begin(),
+       ie = addedStates.end(); it != ie; ++it) {
+    ExecutionState *s = *it;
+    if (s->loopBB) {
+      assert(!rollerStateStack.has(s));
+      rollerStateStack.push_back(s);
+      llvm::errs() << __FILE__ << ":" << __LINE__ << " added roller state " << *it << "\n";
     } else {
-      // Handles other instruction
-      if (current->loopBB && !removedStates.count(current)) {
-        // Put the current state back to the roller stack so it can be
-        // selected for the next instruction.
-        rollerStateStack.push_back(current);
-      }
+      A.insert(s);
     }
   }
-
-  baseSearcher->update(current, addedStates, removedStates);
+  // Remove terminated rollers
+  std::set<ExecutionState*> R;
+  for (std::set<ExecutionState*>::iterator it = removedStates.begin(),
+       ie = removedStates.end(); it != ie; ++it) {
+    ExecutionState *s = *it;
+    if (s->loopBB) {
+      assert(rollerStateStack.has(s));
+      rollerStateStack.erase(s);
+      llvm::errs() << __FILE__ << ":" << __LINE__ << " removed roller state " << *it << "\n";
+    } else {
+      R.insert(s);
+    }
+  }
+  if (currentIsRoller) {
+    baseSearcher->update(0, A, R); // base searchers do not know about rollers
+  } else {
+    if (current && current->loopBB) { // current was just transformed into a roller
+      rollerStateStack.push_back(current); // add into roller stack
+      llvm::errs() << __FILE__ << ":" << __LINE__ << " transformed roller state " << current << "\n";
+      R.insert(current); // force the base searchers to forget current
+    }
+    baseSearcher->update(current, A, R);
+  }
 }
 
 DelayedExternalCallSearcher::DelayedExternalCallSearcher(
@@ -825,31 +762,28 @@ void ThreadSearcher::update(ExecutionState *current,
                             const std::set<ExecutionState*> &removedStates) {
   // bool DebugPrint = removedStates.find(current) != removedStates.end();
   // llvm::errs() << __FILE__ << ":" << __LINE__ << " " << DebugPrint << "\n";
-  if (!addedStates.empty() || !removedStates.empty()) {
-    // Fix: hide the already blocked states in my own stash
-    std::set<ExecutionState *> A = addedStates;
-    for (std::set<ExecutionState*>::const_iterator it = addedStates.begin(),
-         ie = addedStates.end(); it != ie; ++it) {
-      if ((*it)->blocked) {
-        llvm::errs() << __FILE__ << ":" << __LINE__ << " added blocked state " << *it << "\n";
-        blockedStates.insert(*it);
-        A.erase(*it);
-      }
+
+  // Fix: hide the already blocked states in my own stash
+  std::set<ExecutionState *> A = addedStates;
+  for (std::set<ExecutionState*>::const_iterator it = addedStates.begin(),
+       ie = addedStates.end(); it != ie; ++it) {
+    if ((*it)->blocked) {
+      llvm::errs() << __FILE__ << ":" << __LINE__ << " added blocked state " << *it << "\n";
+      blockedStates.insert(*it);
+      A.erase(*it);
     }
-    std::set<ExecutionState *> R = removedStates;
-    for (std::set<ExecutionState*>::const_iterator it = removedStates.begin(),
-         ie = removedStates.end(); it != ie; ++it) {
-      // Fix: ONLY skip removing those blocked states
-      if (blockedStates.find(*it) != blockedStates.end()) {
-        llvm::errs() << __FILE__ << ":" << __LINE__ << " removed blocked state " << *it << "\n";
-        blockedStates.erase(*it);
-        R.erase(*it);
-      }
-    }
-    baseSearcher->update(current, A, R);
-  } else {
-    baseSearcher->update(current, addedStates, removedStates);
   }
+  std::set<ExecutionState *> R = removedStates;
+  for (std::set<ExecutionState*>::const_iterator it = removedStates.begin(),
+       ie = removedStates.end(); it != ie; ++it) {
+    // Fix: ONLY skip removing those blocked states
+    if (blockedStates.find(*it) != blockedStates.end()) {
+      llvm::errs() << __FILE__ << ":" << __LINE__ << " removed blocked state " << *it << "\n";
+      blockedStates.erase(*it);
+      R.erase(*it);
+    }
+  }
+  baseSearcher->update(current, A, R);
 
   if (current) {
     if (current->blocked) {

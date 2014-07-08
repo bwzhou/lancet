@@ -151,6 +151,7 @@ void DiscretePDF<T>::update(T item, weight_type weight) {
   Node *n = *lookup(item, 0);
 
   if (!n) {
+    std::cerr << "DiscretePDF " << __func__ << " " << (void *) item << std::endl;
     assert(0 && "update: argument(item) not in tree");
   } else {
     n->weight = weight;

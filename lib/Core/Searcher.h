@@ -14,9 +14,11 @@
 #include <set>
 #include <map>
 #include <queue>
+#include <list>
 
 // FIXME: Move out of header, use llvm streams.
 #include <ostream>
+#include "llvm/Support/raw_ostream.h"
 
 namespace llvm {
   class BasicBlock;
@@ -301,10 +303,71 @@ namespace klee {
     }
   };
 
+  template <typename T>
+  class FIFO {
+    std::map<T, typename std::list<T>::iterator> index;
+    std::list<T> queue;
+
+  public:
+    FIFO() {}
+    ~FIFO() {}
+
+    bool empty() const {
+      return index.empty();
+    }
+    bool has(const T& item) const {
+      return index.find(item) != index.end();
+    }
+    void push_front(T& item) {
+      if (index.find(item) == index.end()) {
+        llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__ << " " << item << "\n";
+        queue.push_front(item);
+        index[item] = --queue.end();
+      }
+    }
+    void push_back(T& item) {
+      if (index.find(item) == index.end()) {
+        llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__ << " " << item << "\n";
+        queue.push_back(item);
+        index[item] = --queue.end();
+      }
+    }
+    void pop_front() {
+      if (!empty()) {
+        T& item = queue.front();
+        llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__ << " " << item << "\n";
+        index.erase(item);
+        queue.pop_front();
+      }
+    }
+    void pop_back() {
+      if (!empty()) {
+        T& item = queue.back();
+        llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__ << " " << item << "\n";
+        index.erase(item);
+        queue.pop_back();
+      }
+    }
+    T& front() {
+      return queue.front();
+    }
+    T& back() {
+      return queue.back();
+    }
+    void erase(T& item) {
+      if (index.find(item) != index.end()) {
+        llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__ << " " << item << "\n";
+        queue.erase(index[item]);
+        index.erase(item);
+      }
+    }
+  };
+
   class LoopSearcher : public Searcher {
     Executor &executor;
     Searcher *baseSearcher;
-    std::vector<ExecutionState*> rollerStateStack;
+    //std::vector<ExecutionState*> rollerStateStack;
+    FIFO<ExecutionState*> rollerStateStack;
 
   public:
     LoopSearcher(Executor &executor, Searcher *baseSearcher);

@@ -26,6 +26,7 @@
 
 namespace llvm {
   class Loop;
+  class Function;
 }
 
 namespace klee {
@@ -115,6 +116,7 @@ public:
   unsigned incomingBBIndex;
 
   llvm::Loop* loopBB;
+  llvm::Function* loopF;
   unsigned loopTotalCount;
 
   std::stack<KInstIterator> symbolic_branches;

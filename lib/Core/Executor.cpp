@@ -127,6 +127,14 @@ using namespace metaSMT::solver;
 #endif /* SUPPORT_METASMT */
 
 
+cl::opt<unsigned>
+LoopMinCount("loop-min-count",
+             cl::init(1));
+
+cl::opt<unsigned>
+LoopMaxCount("loop-max-count",
+             cl::init(100));
+
 
 namespace {
   cl::opt<bool>
@@ -271,13 +279,25 @@ TargetedLoopOnly("targeted-loop-only",
                  cl::desc("Explore only the targeted loops specified by user with loop attribute (default=off)"),
                  cl::init(false));
 
-namespace {
-  uint64_t executedInstructionCount = 0;
-}
+/*
+ * namespace {
+ *   uint64_t executedInstructionCount = 0;
+ * }
+ */
 
 namespace klee {
   RNG theRNG;
 }
+
+/*
+ * TODO 20140616
+ * 1.switch instruction
+ * 2.memcached::hash
+ * 3.pthread_mutex_trylock
+ * 4.bind symbolic to concrete
+ * 5.memcached::main timer event callback
+ * 6.memcached [[loop_target]]
+ */
 
 
 Executor::Executor(const InterpreterOptions &opts,
@@ -773,15 +793,6 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
     }
   }
 
-  /*
-   * if (!dyn_cast<ConstantExpr>(condition)) {
-   *   std::cerr << __FILE__ << ":" << __LINE__ << " state " << &current
-   *             << " fork condition:"
-   *             << std::endl
-   *             << condition
-   *             << std::endl;
-   * }
-   */
   double timeout = coreSolverTimeout;
   if (isSeeding)
     timeout *= it->second.size();
@@ -791,6 +802,16 @@ Executor::fork(ExecutionState &current, ref<Expr> condition, bool isInternal,
   if (!success) {
     current.pc = current.prevPC;
     terminateStateEarly(current, "Query timed out (fork).");
+
+    std::string output;
+    getConstraintLog(current, output, KQUERY);
+    std::cerr << __FILE__ << ":" << __LINE__ << " state " << &current
+              << "\nconstraints:\n"
+              << output
+              << "\nfork condition:\n"
+              << condition
+              << std::endl;
+
     return StatePair(0, 0);
   }
 
@@ -1159,7 +1180,7 @@ void Executor::bindArgumentConcrete(KFunction *kf, unsigned index,
   if (!isa<ConstantExpr>(value)) {
     std::cerr
       << __FILE__ << ":" << __LINE__ << " " << __func__
-      << " state " << &state << " ERROR: bind symbolic to concrete variable"
+      << " state " << &state << " bind symbolic to concrete variable"
       << std::endl;
   }
   // Fix: bind symbolic value when concrete is not available
@@ -1442,6 +1463,26 @@ void Executor::executeCall(ExecutionState &state,
   }
 }
 
+static bool loopContains(const Loop *L,
+                         const BasicBlock *B,
+                         const LoopInfoBase<BasicBlock, Loop> *LIB) {
+  return L == LIB->getLoopFor(B);
+}
+
+/*
+static bool loopDominates(const Loop *L,
+                          const BasicBlock *B,
+                          const LoopInfoBase<BasicBlock, Loop> *LIB) {
+  Loop *loop = LIB->getLoopFor(B);
+  while (loop) {
+    if (L == loop)
+      return true;
+    loop = loop->getParentLoop();
+  }
+  return false;
+}
+*/
+
 void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src, 
                                     ExecutionState &state) {
   // Note that in general phi nodes can reuse phi values from the same
@@ -1487,19 +1528,61 @@ void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src,
           UseConcreteExplorer = false;
           // Transform an explorer into a roller
           state.loopBB = LIB->getLoopFor(dst);
+          state.loopF = dst->getParent();
 
           std::string output;
           getConstraintLog(state, output, KQUERY);
-          std::cerr << __FILE__ << ":" << __LINE__
-                    << " state " << &state
-                    << " becomes a roller state"
-                    << " after " << executedInstructionCount << " instructions."
-                    << std::endl
-                    << " constraints:"
-                    << std::endl
-                    << output
-                    << std::endl;
+          llvm::errs()
+            << __FILE__ << ":" << __LINE__ << " state " << &state
+            << " becomes a roller state"
+            << " @block " << dst->getName()
+            << " @function " << dst->getParent()->getName()
+            << "\n"
+            << " constraints:\n"
+            << output
+            << "\n";
+        }
+      }
+    }
 
+    if (state.loopBB) {
+      BasicBlock *src = state.prevPC->inst->getParent();
+      BasicBlock *dst = state.pc->inst->getParent();
+      LoopInfoBase<BasicBlock, Loop> *LIB =
+        kmodule->loopInfoBaseMap[dst->getParent()];
+
+      // Make sure we start from OR stop at the same loop as loopBB
+      if (loopContains(state.loopBB, src, LIB) ||
+          loopContains(state.loopBB, dst, LIB)) {
+
+        if (state.loopBB->getHeader() == dst) {
+          // Roller jumps to loop header
+
+          llvm::errs() << __FILE__ << ":" << __LINE__ << ":" << __func__
+                       << " state " << &state
+                       << " loop " << state.loopBB
+                       << " total " << state.loopTotalCount
+                       << " src " << src->getName()
+                       << " depth " << LIB->getLoopDepth(src)
+                       << " dst " << dst->getName()
+                       << " depth " << LIB->getLoopDepth(dst)
+                       << "\n";
+
+          if (loopContains(state.loopBB, src, LIB)) {
+            
+              ++state.loopTotalCount;
+              if (state.loopTotalCount > LoopMaxCount) {
+                // By allowing the state to iterate one more round than the
+                // target number of iterations, the forked state in the last
+                // iteration would have reached the exact target number when
+                // exiting the loop.
+                terminateState(state);
+              }
+              // Back edge must be an unconditional jump
+              assert(addedStates.empty());
+          } else {
+            // Handle the just transformed roller
+          }
         }
       }
     }
@@ -1549,12 +1632,12 @@ Function* Executor::getTargetFunction(Value *calledVal, ExecutionState &state) {
 
   Constant *c = dyn_cast<Constant>(calledVal);
   if (!c)
-    return 0;
+  { llvm::errs() << __FILE__ << ":" << __LINE__ << "\n"; return 0; }
 
   while (true) {
     if (GlobalValue *gv = dyn_cast<GlobalValue>(c)) {
       if (!Visited.insert(gv))
-        return 0;
+      { llvm::errs() << __FILE__ << ":" << __LINE__ << "\n"; return 0; }
 
       std::string alias = state.getFnAlias(gv->getName());
       if (alias != "") {
@@ -1573,14 +1656,14 @@ Function* Executor::getTargetFunction(Value *calledVal, ExecutionState &state) {
       else if (GlobalAlias *ga = dyn_cast<GlobalAlias>(gv))
         c = ga->getAliasee();
       else
-        return 0;
+      { llvm::errs() << __FILE__ << ":" << __LINE__ << "\n"; return 0; }
     } else if (llvm::ConstantExpr *ce = dyn_cast<llvm::ConstantExpr>(c)) {
       if (ce->getOpcode()==Instruction::BitCast)
         c = ce->getOperand(0);
       else
-        return 0;
+      { llvm::errs() << __FILE__ << ":" << __LINE__ << "\n"; return 0; }
     } else
-      return 0;
+    { llvm::errs() << __FILE__ << ":" << __LINE__ << "\n"; return 0; }
   }
 }
 
@@ -1633,6 +1716,8 @@ void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
     if (state.stack.size() <= 1) {
       assert(!caller && "caller set on initial stack frame");
       terminateStateOnExit(state);
+    } else if (state.loopBB && state.loopF == state.stack.back().kf->function) {
+      terminateStateEarly(state, "roller reaches function exit");
     } else {
       state.popFrame();
 
@@ -3019,6 +3104,7 @@ void Executor::run(ExecutionState &initialState) {
 #endif
           if (mbs > MaxMemory) {
             if (mbs > MaxMemory + 100) {
+              llvm::errs() << "MaxMemory=" << MaxMemory << " mbs=" << mbs << "\n";
               // just guess at how many to kill
               unsigned numStates = states.size();
               unsigned toKill = std::max(1U, numStates - numStates*MaxMemory/mbs);
@@ -3401,6 +3487,11 @@ void Executor::callExternalFunction(ExecutionState &state,
           << __FILE__ << ":" << __LINE__ << " state " << &state
           << " branched a new state " << child
           << " to run " << f->getName()
+          << "\n";
+      } else {
+        llvm::errs()
+          << __FILE__ << ":" << __LINE__ << " state " << &state
+          << " function not found"
           << "\n";
       }
     } else if (function->getName().equals("pthread_join")) {
