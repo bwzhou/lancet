@@ -3,21 +3,20 @@ ulimit -s unlimited
 ROOT=$(dirname $0)/..
 BC=$1
 LOG=$2
-MIN=$3 #minimal iterations
-MAX=$4 #maximal iterations
+MAX=$3 #maximal iterations
+       #minimal is always 1
 
-shift
 shift
 shift
 shift
 
 ARG=$@
 
-OPTIONS="-simplify-sym-indices -allow-external-sym-calls -max-instruction-time=10. -max-memory=0 -use-batching-search -batch-instructions=10000 -libc=uclibc -posix-runtime"
-#CMD="time $ROOT/Release+Asserts/bin/klee -use-concrete-explorer -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
-#CMD="time $ROOT/Debug+Asserts/bin/klee -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
+OPTIONS="-simplify-sym-indices -allow-external-sym-calls -max-instruction-time=10. -libc=uclibc -posix-runtime"
+#CMD="time $ROOT/Release+Asserts/bin/klee -use-concrete-explorer -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
+#CMD="time $ROOT/Debug+Asserts/bin/klee -papi -delay-external-call -use-loop-search -libc=uclibc -posix-runtime -max-memory=0 -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs $BC $ARG 2>$LOG"
 #CMD="time $ROOT/Debug+Asserts/bin/klee -use-thread-search -libc=uclibc -posix-runtime -load=$ROOT/examples/libevent/lib/libevent.so $BC $ARG 2>$LOG"
 #CMD="time $ROOT/Debug+Asserts/bin/klee $OPTIONS -use-thread-search $BC $ARG >$LOG 2>&1"
-CMD="time $ROOT/Debug+Asserts/bin/klee $OPTIONS -papi -use-loop-search -loop-min-count $MIN -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs -use-thread-search $BC $ARG >$LOG 2>&1"
+CMD="time $ROOT/Debug+Asserts/bin/klee $OPTIONS -papi -use-loop-search -loop-max-count $MAX -targeted-loop-only -only-roller-output -write-pcs -use-thread-search $BC $ARG >$LOG 2>&1"
 echo $CMD
 eval $CMD

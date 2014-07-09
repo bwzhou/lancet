@@ -430,7 +430,7 @@ void StatsTracker::updateStateStatistics(uint64_t addend) {
     ExecutionState &state = **it;
     const InstructionInfo &ii = *state.pc->info;
     theStatisticManager->incrementIndexedValue(stats::states, ii.id, addend);
-    if (UseCallPaths)
+    if (UseCallPaths && !state.stack.empty())
       state.stack.back().callPathNode->statistics.incrementValue(stats::states, addend);
   }
 }

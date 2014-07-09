@@ -220,12 +220,19 @@ namespace {
   cl::opt<bool>
   OnlyRollerOutput("only-roller-output",
                    cl::init(false));
+
+  cl::opt<unsigned>
+  LoopMinCount("loop-min-count",
+               cl::init(1));
+
+  cl::opt<unsigned>
+  LoopMaxCount("loop-max-count",
+               cl::init(100));
 }
 
 extern cl::opt<double> MaxTime;
 extern cl::opt<bool> TargetedLoopOnly;
-extern cl::opt<unsigned> LoopMinCount;
-extern cl::opt<unsigned> LoopMaxCount;
+
 
 /***/
 
@@ -451,7 +458,7 @@ Module *pristineModule;
 void KleeHandler::processTestCase(const ExecutionState &state,
                                   const char *errorMessage, 
                                   const char *errorSuffix) {
-  if (state.parent != &state)
+  if (state.threadId != 0) // a process generates a single test case
     return;
 
   if (errorMessage && ExitOnError) {
@@ -462,8 +469,14 @@ void KleeHandler::processTestCase(const ExecutionState &state,
   if (OnlyRollerOutput &&
       (!state.loopBB ||
        state.loopTotalCount < LoopMinCount ||
-       state.loopTotalCount > LoopMaxCount))
+       state.loopTotalCount > LoopMaxCount)) {
+    llvm::errs()
+      << "state " << &state
+      << " loop " << state.loopBB
+      << " total " << state.loopTotalCount
+      << "\n";
     return;
+  }
 
   if (!NoOutput) {
     std::vector< std::pair<std::string, std::vector<unsigned char> > > out;

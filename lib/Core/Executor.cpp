@@ -127,15 +127,6 @@ using namespace metaSMT::solver;
 #endif /* SUPPORT_METASMT */
 
 
-cl::opt<unsigned>
-LoopMinCount("loop-min-count",
-             cl::init(1));
-
-cl::opt<unsigned>
-LoopMaxCount("loop-max-count",
-             cl::init(100));
-
-
 namespace {
   cl::opt<bool>
   DumpStatesOnHalt("dump-states-on-halt",
@@ -1483,6 +1474,8 @@ static bool loopDominates(const Loop *L,
 }
 */
 
+static unsigned loop_min_total = 0;
+
 void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src, 
                                     ExecutionState &state) {
   // Note that in general phi nodes can reuse phi values from the same
@@ -1530,6 +1523,14 @@ void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src,
           state.loopBB = LIB->getLoopFor(dst);
           state.loopF = dst->getParent();
 
+          // Parent records the loopBB if any child reaches it
+          if (state.parent->loopBB == NULL) {
+            state.parent->loopBB = state.loopBB;
+          } else {
+            // Only one target loop
+            assert(state.parent->loopBB == state.loopBB);
+          }
+
           std::string output;
           getConstraintLog(state, output, KQUERY);
           llvm::errs()
@@ -1569,14 +1570,20 @@ void Executor::transferToBasicBlock(BasicBlock *dst, BasicBlock *src,
                        << "\n";
 
           if (loopContains(state.loopBB, src, LIB)) {
-            
               ++state.loopTotalCount;
-              if (state.loopTotalCount > LoopMaxCount) {
+
+              // Parent records the sum of iterations from all threads (include
+              // itself)
+              if (state.threadId != 0)
+                ++state.parent->loopTotalCount;
+              
+              if (state.parent->loopTotalCount > loop_min_total) {
                 // By allowing the state to iterate one more round than the
                 // target number of iterations, the forked state in the last
                 // iteration would have reached the exact target number when
                 // exiting the loop.
-                terminateState(state);
+                terminateStateEarly(*state.parent, "loop min total");
+                ++loop_min_total;
               }
               // Back edge must be an unconditional jump
               assert(addedStates.empty());
@@ -2926,6 +2933,7 @@ void Executor::updateStates(ExecutionState *current) {
       seedMap.erase(it3);
     if (es->ptreeNode)
       processTree->remove(es->ptreeNode);
+    // Remove myself from parent
     if (es->parent)
       es->parent->threads[es->threadId] = NULL;
     delete es;
@@ -3098,10 +3106,11 @@ void Executor::run(ExecutionState &initialState) {
           // is O(elts on freelist). This is really bad since we start
           // to pummel the freelist once we hit the memory cap.
 #if LLVM_VERSION_CODE >= LLVM_VERSION(3, 3)
-          unsigned mbs = sys::Process::GetMallocUsage() >> 20;
+          unsigned mbs = sys::Process::GetMallocUsage();// >> 20;
 #else
-          unsigned mbs = sys::Process::GetTotalMemoryUsage() >> 20;
+          unsigned mbs = sys::Process::GetTotalMemoryUsage();// >> 20;
 #endif
+          mbs >>= 20;
           if (mbs > MaxMemory) {
             if (mbs > MaxMemory + 100) {
               llvm::errs() << "MaxMemory=" << MaxMemory << " mbs=" << mbs << "\n";
@@ -3224,18 +3233,11 @@ void Executor::terminateState(ExecutionState &state) {
 
   interpreterHandler->incPathsExplored();
 
-  // Remove myself from parent
-  /*
-   * if (state.parent)
-   *   state.parent->threads[state.threadId] = NULL;
-   */
-
   // Terminate all children
   if (state.threadId == 0) {
     for (unsigned i = 1; i < state.threads.size(); ++i) {
       if (ExecutionState *child = state.threads[i]) {
-        // Empty the stack before parent exits
-        // and invalidates address space
+        // Empty the stack before parent exits and invalidates address space
         while (!child->stack.empty()) child->popFrame();
         child->parent = NULL;
         state.threads[i] = NULL;
@@ -3248,7 +3250,7 @@ void Executor::terminateState(ExecutionState &state) {
          * in Executor::run() should it be one of the first N states in the
          * vector.
          */
-        /* terminateStateEarly(*child, "parent exiting"); */
+        /* terminateStateEarly(*child, "parent exited"); */
       }
     }
   }
@@ -3269,6 +3271,7 @@ void Executor::terminateState(ExecutionState &state) {
     addedStates.erase(it);
     if (state.ptreeNode)
       processTree->remove(state.ptreeNode);
+    // Remove myself from parent
     if (state.parent)
       state.parent->threads[state.threadId] = NULL;
     delete &state;

@@ -115,8 +115,11 @@ public:
 
   unsigned incomingBBIndex;
 
+  // Track the current target loop
   llvm::Loop* loopBB;
+  // Track the function that contains the target loop
   llvm::Function* loopF;
+  // Track the total iterations of the current loop
   unsigned loopTotalCount;
 
   std::stack<KInstIterator> symbolic_branches;
